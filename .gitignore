@@ -1,0 +1,44 @@
+# --- Ignore Python artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Ignore virtual environments and dotenv files ---
+.env
+.env.*.local
+.venv/
+venv/
+ENV/
+env/
+
+# --- Ignore IDE/editor config ---
+.vscode/
+.idea/
+
+# --- Ignore logs, databases, temp files ---
+*.log
+*.sqlite3
+*.tmp
+*.temp
+~$*
+*.swp
+
+# --- Ignore Docker-related files not needed in repo ---
+docker-compose.override.yml
+.dockerignore
+
+# --- Ignore your runtime folders (these get created at container startup) ---
+input/
+logs/
+output/
+processed/
+
+# --- Ignore your ‘old files’ folder if you use one locally ---
+old files/
+
+# --- Ignore that PowerShell rebuild script if you keep it local-only ---
+rebuild.ps1
+
+# --- Ignore OS junk ---
+.DS_Store
+Thumbs.db

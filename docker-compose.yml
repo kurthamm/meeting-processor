@@ -1,0 +1,30 @@
+services:
+  meeting-processor:
+    build:
+      context: .
+      args:
+        HOST_UID: ${HOST_UID}
+        HOST_GID: ${HOST_GID}
+    container_name: meeting-processor
+    # Temporarily comment out user restriction to fix permissions
+    # user: "${HOST_UID}:${HOST_GID}"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OBSIDIAN_VAULT_PATH=${OBSIDIAN_VAULT_PATH}
+      - OBSIDIAN_FOLDER_PATH=${OBSIDIAN_FOLDER_PATH}
+      - INPUT_DIR=/app/input
+      - OUTPUT_DIR=/app/output
+      - PROCESSED_DIR=/app/processed
+    volumes:
+      - "C:/meeting-processor/input:/app/input:rw"
+      - "C:/meeting-processor/output:/app/output:rw"
+      - "C:/meeting-processor/processed:/app/processed:rw"
+      - "C:/meeting-processor/logs:/app/logs:rw"
+      - "C:/Obsidian_Vaults/My_Vault:/app/obsidian_vault:rw"
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
