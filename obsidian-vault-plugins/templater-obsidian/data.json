@@ -1,0 +1,64 @@
+{
+  "command_timeout": 5,
+  "templates_folder": "Meta/templates",
+  "templates_pairs": [
+    [
+      "",
+      ""
+    ]
+  ],
+  "trigger_on_file_creation": true,
+  "auto_jump_to_cursor": false,
+  "enable_system_commands": true,
+  "shell_path": "",
+  "user_scripts_folder": "",
+  "enable_folder_templates": true,
+  "folder_templates": [
+    {
+      "folder": "People",
+      "template": "Meta/templates/person-template.md"
+    },
+    {
+      "folder": "Companies",
+      "template": "Meta/templates/company-template.md"
+    },
+    {
+      "folder": "Projects",
+      "template": "Meta/templates/project-template.md"
+    },
+    {
+      "folder": "Technologies",
+      "template": "Meta/templates/technology-template.md"
+    },
+    {
+      "folder": "Solutions",
+      "template": "Meta/templates/solution-template.md"
+    },
+    {
+      "folder": "Knowledge",
+      "template": "Meta/templates/knowledge-template.md"
+    },
+    {
+      "folder": "Tasks",
+      "template": "Meta/templates/task-template.md"
+    },
+    {
+      "folder": "",
+      "template": ""
+    }
+  ],
+  "enable_file_templates": false,
+  "file_templates": [
+    {
+      "regex": ".*",
+      "template": ""
+    }
+  ],
+  "syntax_highlighting": true,
+  "syntax_highlighting_mobile": false,
+  "enabled_templates_hotkeys": [],
+  "startup_templates": [
+    ""
+  ],
+  "intellisense_render": 1
+}

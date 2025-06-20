@@ -44,20 +44,20 @@ rebuild.ps1
 Thumbs.db
 
 # --- Obsidian Vault Symlinks ---
-# Ignore all vault content by default
-obsidian-vault-*/*
-
-# But explicitly include Meta (templates & dashboards)
+# Don't ignore the vault directories themselves
 !obsidian-vault-meta/
-!obsidian-vault-meta/**
-
-# Include plugin configurations only
 !obsidian-vault-plugins/
+
+# Ignore plugin binaries but keep configuration files
+obsidian-vault-plugins/*/main.js
+obsidian-vault-plugins/*/manifest.json
+obsidian-vault-plugins/*/styles.css
 !obsidian-vault-plugins/dataview/data.json
 !obsidian-vault-plugins/dataview/*.css
 !obsidian-vault-plugins/templater-obsidian/data.json
 
-# Still ignore plugin binaries
-obsidian-vault-plugins/*/main.js
-obsidian-vault-plugins/*/manifest.json
-obsidian-vault-plugins/*/styles.css
+# Ignore other plugins we don't need to track
+obsidian-vault-plugins/calendar/
+obsidian-vault-plugins/metaedit/
+obsidian-vault-plugins/obsidian-local-rest-api/
+obsidian-vault-plugins/tag-wrangler/
