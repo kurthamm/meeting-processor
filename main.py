@@ -5,8 +5,13 @@ Clean, modular architecture with focused responsibilities
 """
 
 import time
+from datetime import datetime
 from pathlib import Path
 from watchdog.observers import Observer
+from entities.detector import EntityDetector
+from entities.manager import ObsidianEntityManager
+from obsidian.formatter import ObsidianFormatter
+from typing import List
 
 from config.settings import Settings
 from core.audio_processor import AudioProcessor
@@ -18,6 +23,8 @@ from entities.manager import ObsidianEntityManager
 from obsidian.formatter import ObsidianFormatter
 from monitoring.file_watcher import MeetingFileHandler
 from utils.logger import Logger
+from core.task_extractor import TaskExtractor
+from core.dashboard_generator import DashboardGenerator
 
 
 class MeetingProcessor:
@@ -45,6 +52,8 @@ class MeetingProcessor:
             self.settings.anthropic_client
         )
         self.obsidian_formatter = ObsidianFormatter(self.claude_analyzer)
+        self.task_extractor = TaskExtractor(self.settings.anthropic_client)
+        self.dashboard_generator = DashboardGenerator(self.file_manager, self.settings.anthropic_client)
         
         self.logger.info(f"Meeting Processor initialized")
         self.logger.info(f"Monitoring: {self.file_manager.input_dir}")
@@ -193,11 +202,104 @@ Successfully detected and converted meeting recording to FLAC format.
                     meeting_date
                 )
             
-            # Save to Obsidian vault
-            success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
-            if success and entity_links and any(entity_links.values()):
-                vault_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / obsidian_filename
-                self.entity_manager.update_meeting_note_with_entities(vault_path, entity_links)
+            # Extract all tasks for project visibility
+            self.logger.info("📋 Extracting tasks from meeting...")
+            all_tasks = self.task_extractor.extract_all_tasks(
+                analysis['transcript'], 
+                obsidian_filename.replace('.md', ''),
+                meeting_date
+            )
+
+            task_links = []  # Store links to created task files
+            if all_tasks:
+                # Create individual task notes in /Tasks folder
+                for task in all_tasks:
+                    task_file_path = self.task_extractor.create_task_note(task, self.file_manager)
+                    if task_file_path:
+                        # Extract just the filename for linking
+                        task_filename = Path(task_file_path).stem
+                        task_link = f"[[Tasks/{task_filename}|{task['task']}]]"
+                        task_links.append(task_link)
+                
+                # Create comprehensive dashboard in /Meta/dashboards
+                self.task_extractor.create_comprehensive_dashboard(
+                    all_tasks, 
+                    obsidian_filename.replace('.md', ''),
+                    self.file_manager
+                )
+                
+                # Update the obsidian content to include task links
+                if task_links:
+                    obsidian_content = self._update_meeting_note_with_task_links(
+                        obsidian_content, 
+                        task_links
+                    )
+    def _update_meeting_note_with_task_links(self, obsidian_content: str, task_links: List[str]) -> str:
+        """
+        Update the meeting note to include links to created task files
+        """
+        try:
+            lines = obsidian_content.split('\n')
+            updated_lines: List[str] = []
+            in_action_items_section = False
+
+            for line in lines:
+                # Look for the Action Items section
+                if line.strip() == "## Action Items":
+                    updated_lines.append(line)
+                    updated_lines.append("<!-- Links to task records -->")
+
+                    # Add all task links
+                    for task_link in task_links:
+                        updated_lines.append(f"- [ ] {task_link}")
+
+                    in_action_items_section = True
+                    continue
+
+                # Skip the placeholder comment and move to next section
+                elif in_action_items_section and line.strip().startswith("<!--"):
+                    continue
+
+                # When we hit the next header, we're done with action items
+                elif in_action_items_section and line.startswith("## "):
+                    in_action_items_section = False
+                    updated_lines.append("")  # add a blank line for spacing
+                    updated_lines.append(line)
+                    continue
+
+                # Skip any existing action-item lines if we're still in that section
+                elif in_action_items_section and (
+                    line.strip().startswith("- [ ]") or line.strip().startswith("- [x]")
+                ):
+                    continue
+
+                # All other lines
+                else:
+                    updated_lines.append(line)
+
+            self.logger.info(f"✅ Updated meeting note with {len(task_links)} task links")
+            return "\n".join(updated_lines)
+
+        except Exception as e:
+            self.logger.error(f"Error updating meeting note with task links: {e}")
+            # If something goes wrong, return the original unmodified content
+            return obsidian_content
+
+            
+            # Smart dashboard update
+        meeting_data = {
+            'filename': obsidian_filename,
+            'date': meeting_date,
+            'has_transcript': True
+        }
+            
+        self.update_dashboard_intelligently(meeting_data, all_tasks, analysis.get('entities'))
+              
+        # Save to Obsidian vault
+        success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
+        if success and entity_links and any(entity_links.values()):
+            vault_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / obsidian_filename
+            self.entity_manager.update_meeting_note_with_entities(vault_path, entity_links)
         
         # Save JSON and markdown formats
         analysis_path = self.file_manager.output_dir / f"{enhanced_filename}_analysis.json"
@@ -226,6 +328,126 @@ Successfully detected and converted meeting recording to FLAC format.
         else:
             self.logger.info("📭 No existing MP4 files found")
 
+    def update_dashboard_intelligently(self, meeting_data, all_tasks=None, entities=None):
+        """Smart dashboard updating strategy"""
+        
+        # Always update for high-impact meetings
+        if self._is_high_impact_meeting(meeting_data, all_tasks, entities):
+            self.logger.info("🔥 High-impact meeting detected - updating dashboard")
+            self.dashboard_generator.create_primary_dashboard()
+            return
+        
+        # Time-based updates
+        last_update = self._get_last_dashboard_update()
+        hours_since = (datetime.now() - last_update).total_seconds() / 3600
+        
+        if hours_since >= 6:  # Refresh every 6 hours max
+            self.logger.info(f"⏰ {hours_since:.1f} hours since last update - refreshing dashboard")
+            self.dashboard_generator.create_primary_dashboard()
+            return
+        
+        # Morning refresh (if not updated since yesterday)
+        if datetime.now().hour == 9 and hours_since >= 12:
+            self.logger.info("🌅 Morning dashboard refresh")
+            self.dashboard_generator.create_primary_dashboard()
+            return
+            
+        # Just log that meeting was processed
+        self.logger.info(f"📊 Dashboard up-to-date ({hours_since:.1f}h ago), skipping refresh")
+    
+    def _is_high_impact_meeting(self, meeting_data, all_tasks=None, entities=None) -> bool:
+        """Determine if meeting warrants immediate dashboard update"""
+        try:
+            # High priority tasks created
+            if all_tasks:
+                high_priority_tasks = [t for t in all_tasks if t.get('priority', '').lower() == 'high']
+                urgent_tasks = [t for t in all_tasks if self._is_urgent_task_data(t)]
+                
+                if len(high_priority_tasks) >= 2:
+                    self.logger.info(f"🔥 High-impact: {len(high_priority_tasks)} high-priority tasks created")
+                    return True
+                
+                if len(urgent_tasks) >= 1:
+                    self.logger.info(f"🚨 High-impact: {len(urgent_tasks)} urgent tasks created")
+                    return True
+            
+            # Important new contacts (companies marked as clients)
+            if entities:
+                new_companies = entities.get('companies', [])
+                if len(new_companies) >= 2:
+                    self.logger.info(f"🏢 High-impact: {len(new_companies)} new companies detected")
+                    return True
+                
+                new_people = entities.get('people', [])
+                if len(new_people) >= 3:
+                    self.logger.info(f"👥 High-impact: {len(new_people)} new people detected")
+                    return True
+            
+            # Meeting topic keywords that indicate importance
+            meeting_filename = meeting_data.get('filename', '').lower()
+            high_impact_keywords = [
+                'client', 'sales', 'contract', 'deal', 'strategy', 'executive', 
+                'board', 'crisis', 'urgent', 'critical', 'launch', 'review'
+            ]
+            
+            for keyword in high_impact_keywords:
+                if keyword in meeting_filename:
+                    self.logger.info(f"🎯 High-impact: Meeting contains keyword '{keyword}'")
+                    return True
+            
+            # Large number of total tasks
+            if all_tasks and len(all_tasks) >= 5:
+                self.logger.info(f"📋 High-impact: {len(all_tasks)} tasks created")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.logger.warning(f"Error evaluating meeting impact: {e}")
+            return False  # Default to not high-impact if error
+    
+    def _is_urgent_task_data(self, task_data: dict) -> bool:
+        """Check if task data indicates urgency"""
+        try:
+            # Check deadline urgency
+            deadline = task_data.get('deadline', '')
+            if deadline and deadline != 'not specified':
+                try:
+                    from datetime import datetime
+                    deadline_date = datetime.strptime(deadline, "%Y-%m-%d")
+                    days_until = (deadline_date - datetime.now()).days
+                    if days_until <= 3:  # Due within 3 days
+                        return True
+                except:
+                    pass
+            
+            # Check for urgent keywords in task description
+            task_desc = task_data.get('task', '').lower()
+            urgent_keywords = ['urgent', 'asap', 'immediately', 'critical', 'emergency']
+            
+            for keyword in urgent_keywords:
+                if keyword in task_desc:
+                    return True
+            
+            return False
+            
+        except Exception:
+            return False
+    
+    def _get_last_dashboard_update(self) -> datetime:
+        """Get the timestamp of the last dashboard update"""
+        try:
+            dashboard_path = Path(self.file_manager.obsidian_vault_path) / "Meta" / "dashboards" / "🧠-Command-Center.md"
+            
+            if dashboard_path.exists():
+                return datetime.fromtimestamp(dashboard_path.stat().st_mtime)
+            else:
+                # No dashboard exists, return very old date to force update
+                return datetime(2020, 1, 1)
+                
+        except Exception as e:
+            self.logger.warning(f"Error getting last dashboard update time: {e}")
+            return datetime(2020, 1, 1)  # Force update on error
 
 def main():
     """Application entry point"""
