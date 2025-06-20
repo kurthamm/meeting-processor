@@ -24,4 +24,4 @@ RUN chown -R obsidian:obsidian /app
 # Switch to the non-root user
 USER obsidian
 # Default command
-CMD ["python", "meeting_processor.py"]
+CMD ["python", "main.py"]
