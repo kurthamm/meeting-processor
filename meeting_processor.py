@@ -1,4 +1,599 @@
-#!/usr/bin/env python3
+class FileManager:
+    """Handles file operations and tracking"""
+    
+    def __init__(self, input_dir: Path, output_dir: Path, processed_dir: Path, 
+                 obsidian_vault_path: str, obsidian_folder_path: str):
+        self.input_dir = input_dir
+        self.output_dir = output_dir
+        self.processed_dir = processed_dir
+        self.obsidian_vault_path = obsidian_vault_path
+        self.obsidian_folder_path = obsidian_folder_path
+        
+        self.processed_files_log = self.output_dir / 'processed_files.txt'
+        self.processed_files = set()
+        self.logger = logging.getLogger(__name__)
+        
+        self._setup_directories()
+        self._load_processed_files()
+    
+    def _setup_directories(self):
+        """Create necessary directories"""
+        self.input_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.processed_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Create Obsidian vault directory structure
+        obsidian_full_path = Path(self.obsidian_vault_path) / self.obsidian_folder_path
+        obsidian_full_path.mkdir(parents=True, exist_ok=True)
+    
+    def _load_processed_files(self):
+        """Load list of already processed files"""
+        try:
+            # For testing - allow reprocessing files
+            testing_mode = os.getenv('TESTING_MODE', 'false').lower() == 'true'
+            if testing_mode:
+                self.logger.info("TESTING MODE: Clearing processed files list")
+                self.processed_files = set()
+                if self.processed_files_log.exists():
+                    self.processed_files_log.unlink()
+                return
+            
+            if self.processed_files_log.exists():
+                with open(self.processed_files_log, 'r') as f:
+                    self.processed_files = set(line.strip() for line in f if line.strip())
+                self.logger.info(f"Loaded {len(self.processed_files)} previously processed files")
+        except Exception as e:
+            self.logger.warning(f"Could not load processed files log: {e}")
+            self.processed_files = set()
+    
+    def mark_file_processed(self, filename: str):
+        """Mark a file as processed"""
+        try:
+            self.processed_files.add(filename)
+            with open(self.processed_files_log, 'a') as f:
+                f.write(f"{filename}\n")
+            self.logger.info(f"Marked {filename} as processed")
+        except Exception as e:
+            self.logger.error(f"Could not mark file as processed: {e}")
+    
+    def is_file_processed(self, filename: str) -> bool:
+        """Check if a file has already been processed"""
+        return filename in self.processed_files
+    
+    def save_to_obsidian_vault(self, filename: str, content: str) -> bool:
+        """Save content directly to Obsidian vault via file system"""
+        try:
+            vault_file_path = Path(self.obsidian_vault_path) / self.obsidian_folder_path / filename
+            vault_file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(vault_file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            
+            self.logger.info(f"Successfully saved {filename} to Obsidian vault: {vault_file_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error saving to Obsidian vault: {str(e)}")
+            return False
+    
+    def move_processed_file(self, file_path: Path):
+        """Move processed MP4 file to processed directory"""
+        try:
+            processed_path = self.processed_dir / file_path.name
+            self.processed_dir.mkdir(parents=True, exist_ok=True)
+            
+            self.logger.info(f"Attempting to move {file_path} to {processed_path}")
+            
+            # Copy file
+            try:
+                shutil.copyfile(file_path, processed_path)
+                self.logger.info(f"Successfully copied {file_path.name}")
+            except Exception as copy_error:
+                self.logger.info(f"copyfile failed ({copy_error}), trying manual byte copy")
+                with open(file_path, 'rb') as src, open(processed_path, 'wb') as dst:
+                    dst.write(src.read())
+                self.logger.info(f"Successfully copied {file_path.name} using manual byte copy")
+            
+            # Wait and then remove original
+            time.sleep(1.0)
+            
+            try:
+                file_path.unlink()
+                self.logger.info(f"Successfully moved {file_path.name} to processed directory")
+            except Exception as delete_error:
+                self.logger.error(f"Copy succeeded but delete failed: {delete_error}")
+                self.logger.warning(f"File {file_path.name} copied to processed but original remains")
+                
+        except Exception as e:
+            self.logger.error(f"Error moving processed file: {str(e)}")
+            raise Exception(f"Unable to move processed file {file_path.name}")
+
+
+class ObsidianFormatter:
+    """Handles Obsidian note formatting"""
+    
+    def __init__(self, claude_analyzer: ClaudeAnalyzer):
+        self.claude_analyzer = claude_analyzer
+        self.logger = logging.getLogger(__name__)
+    
+    def create_obsidian_note(self, analysis_text: str, transcript: str, 
+                           filename: str, meeting_topic: str) -> str:
+        """Convert analysis to Obsidian note format"""
+        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
+        meeting_date = date_match.group(1) if date_match else datetime.now().strftime("%Y-%m-%d")
+        
+        clean_title = meeting_topic.replace('-', ' ')
+        
+        self.logger.info("Identifying speakers in transcript with full content preservation...")
+        formatted_transcript = self.claude_analyzer.identify_speakers(transcript)
+        
+        # Build the note content without f-string to avoid syntax issues
+        note_parts = []
+        note_parts.append("Type: Meeting")
+        note_parts.append(f"Date: {meeting_date}")
+        note_parts.append("Project: ")
+        note_parts.append("Meeting Type: Technical Review / Sales Call / Planning / Standup / Demo / Crisis")
+        note_parts.append("Duration: ")
+        note_parts.append("Status: Processed")
+        note_parts.append("")
+        note_parts.append("## Attendees")
+        note_parts.append("Internal Team: ")
+        note_parts.append("Client/External: ")
+        note_parts.append("Key Decision Makers: ")
+        note_parts.append("")
+        note_parts.append("## Meeting Context")
+        note_parts.append("Purpose: ")
+        note_parts.append("Agenda Items: ")
+        note_parts.append("Background: ")
+        note_parts.append("Expected Outcomes: ")
+        note_parts.append("")
+        note_parts.append("## Key Decisions Made")
+        note_parts.append("<!-- Extracted automatically and manually added -->")
+        note_parts.append("")
+        note_parts.append("## Action Items")
+        note_parts.append("<!-- Links to task records -->")
+        note_parts.append("")
+        note_parts.append("## Technical Discussions")
+        note_parts.append("Architecture Decisions: ")
+        note_parts.append("Technology Choices: ")
+        note_parts.append("Integration Approaches: ")
+        note_parts.append("Performance Considerations: ")
+        note_parts.append("")
+        note_parts.append("## Issues Identified")
+        note_parts.append("Blockers: ")
+        note_parts.append("Technical Challenges: ")
+        note_parts.append("Business Risks: ")
+        note_parts.append("Dependencies: ")
+        note_parts.append("")
+        note_parts.append("## Opportunities Discovered")
+        note_parts.append("Upsell Potential: ")
+        note_parts.append("Future Projects: ")
+        note_parts.append("New Requirements: ")
+        note_parts.append("Partnership Options: ")
+        note_parts.append("")
+        note_parts.append("## Knowledge Captured")
+        note_parts.append("New Insights: ")
+        note_parts.append("Best Practices: ")
+        note_parts.append("Lessons Learned: ")
+        note_parts.append("Process Improvements: ")
+        note_parts.append("")
+        note_parts.append("## Follow-up Required")
+        note_parts.append("Next Meeting: ")
+        note_parts.append("Documentation Needed: ")
+        note_parts.append("Research Tasks: ")
+        note_parts.append("Client Communication: ")
+        note_parts.append("")
+        note_parts.append("## Entity Connections")
+        note_parts.append("People Mentioned: ")
+        note_parts.append("Companies Discussed: ")
+        note_parts.append("Technologies Referenced: ")
+        note_parts.append("Solutions Applied: ")
+        note_parts.append("Related Projects: ")
+        note_parts.append("")
+        note_parts.append("## Meeting Quality")
+        note_parts.append("Effectiveness: High / Medium / Low")
+        note_parts.append("Decision Quality: Good / Fair / Poor")
+        note_parts.append("Action Clarity: Clear / Unclear")
+        note_parts.append("Follow-up Needed: Yes / No")
+        note_parts.append("")
+        note_parts.append("## AI Analysis")
+        note_parts.append("")
+        note_parts.append(analysis_text)
+        note_parts.append("")
+        note_parts.append("## Complete Transcript")
+        note_parts.append("")
+        note_parts.append(formatted_transcript)
+        note_parts.append("")
+        note_parts.append("---")
+        note_parts.append("Tags: #meeting #project/active #type/technical-review")
+        note_parts.append("Audio File: ")
+        note_parts.append(f"Processed: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        note_parts.append("Auto-generated: Yes")
+        
+        return "\n".join(note_parts)
+
+
+class MeetingProcessor:
+    """Main meeting processor that orchestrates all components"""
+    
+    def __init__(self):
+        self.logger = Logger.setup()
+        
+        # Initialize API clients
+        self._init_api_clients()
+        
+        # Initialize directories and file management
+        self._init_directories()
+        
+        # Initialize components
+        self.audio_processor = AudioProcessor(self.file_manager.output_dir)
+        self.transcription_service = TranscriptionService(self.openai_client, self.audio_processor)
+        self.claude_analyzer = ClaudeAnalyzer(self.anthropic_client)
+        self.obsidian_formatter = ObsidianFormatter(self.claude_analyzer)
+        self.entity_detector = EntityDetector(self.anthropic_client)
+        
+        self.logger.info(f"Monitoring directory: {self.file_manager.input_dir}")
+        self.logger.info(f"Output directory: {self.file_manager.output_dir}")
+        self.logger.info(f"Obsidian vault path: {self.file_manager.obsidian_vault_path}")
+    
+    def _init_api_clients(self):
+        """Initialize API clients"""
+        self.anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+        self.openai_key = os.getenv('OPENAI_API_KEY')
+        
+        if not self.anthropic_key:
+            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
+        
+        if not OPENAI_AVAILABLE:
+            self.logger.warning("OpenAI module not installed - will create placeholder analysis only")
+            self.openai_client = None
+        elif not self.openai_key:
+            self.logger.warning("OPENAI_API_KEY not found - will create placeholder analysis only")
+            self.openai_client = None
+        else:
+            self.openai_client = openai.OpenAI(api_key=self.openai_key)
+            self.logger.info("OpenAI client initialized successfully")
+        
+        self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_key)
+    
+    def _init_directories(self):
+        """Initialize directory structure and file manager"""
+        input_dir = Path(os.getenv('INPUT_DIR', '/app/input'))
+        output_dir = Path(os.getenv('OUTPUT_DIR', '/app/output'))
+        processed_dir = Path(os.getenv('PROCESSED_DIR', '/app/processed'))
+        obsidian_vault_path = os.getenv('OBSIDIAN_VAULT_PATH', '/app/obsidian_vault')
+        obsidian_folder_path = os.getenv('OBSIDIAN_FOLDER_PATH', 'Meetings')
+        
+        self.file_manager = FileManager(
+            input_dir, output_dir, processed_dir,
+            obsidian_vault_path, obsidian_folder_path
+        )
+    
+    def create_placeholder_analysis(self, flac_path: Path) -> Dict[str, Any]:
+        """Create placeholder analysis when transcription is not available"""
+        file_size = flac_path.stat().st_size / (1024 * 1024)
+        
+        analysis = f"""# Meeting Analysis - {flac_path.stem}
+
+**File:** {flac_path.name}
+**Size:** {file_size:.2f} MB
+**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+---
+
+## Audio File Processed
+
+This system successfully detected and converted your meeting recording to FLAC format. 
+
+**Note:** To enable full transcription and analysis, ensure both API keys are properly configured.
+
+## Current Status
+
+- ✅ MP4 detected and processed
+- ✅ Audio converted to FLAC format
+- ⏳ Transcription requires OpenAI API key
+- ⏳ Analysis requires transcript
+
+## File Location
+
+Your audio file has been saved and is ready for processing:
+- **FLAC File:** Available in the output directory
+- **Original MP4:** Moved to processed directory
+"""
+
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "source_file": flac_path.name,
+            "transcript": "Transcription not available - OpenAI API key required",
+            "analysis": analysis,
+            "file_size_mb": round(file_size, 2),
+            "status": "audio_converted_awaiting_api_key"
+        }
+    
+    def save_analysis(self, analysis: Dict[str, Any], original_filename: str) -> Path:
+        """Save the analysis to files including Obsidian format"""
+        # Extract meeting topic for filename if we have a transcript
+        meeting_topic = "Meeting-Recording"  # Default
+        if ('transcript' in analysis and 
+            not analysis['transcript'].startswith('Transcription not available')):
+            meeting_topic = self.claude_analyzer.extract_meeting_topic(analysis['transcript'])
+        
+        # Create enhanced filename with topic, date, and time
+        meeting_date = datetime.now().strftime("%Y-%m-%d")
+        meeting_time = datetime.now().strftime("%H-%M")
+        enhanced_filename = f"{meeting_topic}_{meeting_date}_{meeting_time}"
+        
+        # Create Obsidian note if we have a transcript
+        if ('transcript' in analysis and 
+            not analysis['transcript'].startswith('Transcription not available')):
+            obsidian_content = self.obsidian_formatter.create_obsidian_note(
+                analysis['analysis'], 
+                analysis['transcript'], 
+                original_filename,
+                meeting_topic
+            )
+            
+            # Save Obsidian note with enhanced filename
+            obsidian_filename = f"{enhanced_filename}_meeting.md"
+            obsidian_path = self.file_manager.output_dir / obsidian_filename
+            
+            with open(obsidian_path, 'w', encoding='utf-8') as f:
+                f.write(obsidian_content)
+            
+            self.logger.info(f"Obsidian meeting note saved to {obsidian_path}")
+            
+            # Save to Obsidian vault via direct file system access
+            success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
+            if success:
+                self.logger.info("Meeting note successfully saved to Obsidian vault")
+            else:
+                self.logger.warning("Failed to save to Obsidian vault - note saved locally only")
+        
+        # Save original JSON format with enhanced filename
+        analysis_filename = f"{enhanced_filename}_analysis.json"
+        analysis_path = self.file_manager.output_dir / analysis_filename
+        
+        with open(analysis_path, 'w', encoding='utf-8') as f:
+            json.dump(analysis, f, indent=2, ensure_ascii=False)
+        
+        # Save original markdown format with enhanced filename
+        md_filename = f"{enhanced_filename}_analysis.md"
+        md_path = self.file_manager.output_dir / md_filename
+        
+        with open(md_path, 'w', encoding='utf-8') as f:
+            f.write(f"# Meeting Analysis - {meeting_topic}\n\n")
+            f.write(f"**Processed:** {analysis['timestamp']}\n")
+            f.write(f"**Source:** {analysis['source_file']}\n\n")
+            f.write("---\n\n")
+            
+            if ('transcript' in analysis and 
+                not analysis['transcript'].startswith('Transcription not available')):
+                f.write("## Complete Transcript\n\n")
+                f.write(analysis['transcript'])
+                f.write("\n\n---\n\n")
+                f.write("## Analysis\n\n")
+                f.write(analysis['analysis'])
+                
+                # Save separate transcript file with enhanced filename
+                txt_filename = f"{enhanced_filename}_transcript.txt"
+                txt_path = self.file_manager.output_dir / txt_filename
+                with open(txt_path, 'w', encoding='utf-8') as txt_file:
+                    txt_file.write(analysis['transcript'])
+            else:
+                f.write(analysis['analysis'])
+        
+        self.logger.info(f"Analysis saved to {analysis_path} and {md_path}")
+        return analysis_path
+    
+    def process_meeting_file(self, mp4_path: Path):
+        """Complete processing pipeline for a meeting file"""
+        try:
+            self.logger.info(f"Starting processing of {mp4_path}")
+            
+            # Convert MP4 to FLAC
+            flac_path = self.audio_processor.convert_mp4_to_flac(mp4_path)
+            if not flac_path:
+                self.logger.error(f"Failed to convert {mp4_path}")
+                return
+            
+            # Process with transcription and analysis
+            analysis = self._process_with_transcription(flac_path)
+            if not analysis:
+                self.logger.error(f"Failed to process {flac_path}")
+                return
+            
+            # Save results and move processed file
+            self.save_analysis(analysis, mp4_path.name)
+            self.file_manager.move_processed_file(mp4_path)
+            self.file_manager.mark_file_processed(mp4_path.name)
+            
+            self.logger.info(f"Successfully completed processing of {mp4_path.name}")
+            
+        except Exception as e:
+            self.logger.error(f"Error in processing pipeline: {str(e)}")
+    
+    def _process_with_transcription(self, flac_path: Path) -> Optional[Dict[str, Any]]:
+        """Process FLAC file - either with full transcription or placeholder"""
+        try:
+            if self.openai_client:
+                self.logger.info(f"Processing {flac_path} with Whisper + Claude AI")
+                
+                # Transcribe audio
+                transcript = self.transcription_service.transcribe_audio(flac_path)
+                if not transcript:
+                    self.logger.error(f"Failed to transcribe {flac_path}")
+                    return self.create_placeholder_analysis(flac_path)
+                
+                # Analyze with Claude
+                result = self.claude_analyzer.analyze_transcript(transcript, flac_path.name)
+                if not result:
+                    self.logger.error(f"Failed to analyze transcript with Claude AI")
+                    return self.create_placeholder_analysis(flac_path)
+                
+                # Detect entities
+                entities = self.entity_detector.detect_all_entities(transcript, flac_path.name)
+                result['entities'] = entities
+                
+                return result
+            else:
+                self.logger.info(f"Creating placeholder analysis for {flac_path}")
+                return self.create_placeholder_analysis(flac_path)
+            
+        except Exception as e:
+            self.logger.error(f"Error processing: {str(e)}")
+            return self.create_placeholder_analysis(flac_path)
+    
+    def process_existing_files(self):
+        """Process any existing MP4 files on startup"""
+        self.logger.info("Checking for existing MP4 files...")
+        
+        all_files = list(self.file_manager.input_dir.iterdir())
+        self.logger.info(f"All files in directory: {[f.name for f in all_files]}")
+        
+        existing_files = [
+            f for f in all_files 
+            if f.is_file() and f.suffix.lower() == '.mp4'
+        ]
+        
+        self.logger.info(f"MP4 files found: {[f.name for f in existing_files]}")
+        
+        if existing_files:
+            self.logger.info(f"Found {len(existing_files)} existing MP4 file(s)")
+            for mp4_file in existing_files:
+                if not self.file_manager.is_file_processed(mp4_file.name):
+                    self.logger.info(f"Processing existing file: {mp4_file.name}")
+                    self.process_meeting_file(mp4_file)
+                else:
+                    self.logger.info(f"File {mp4_file.name} already processed, skipping")
+        else:
+            self.logger.info("No existing MP4 files found")
+
+
+class MeetingFileHandler(FileSystemEventHandler):
+    """File system event handler for new MP4 files"""
+    
+    def __init__(self, processor: MeetingProcessor):
+        self.processor = processor
+        self.processing_files = set()
+        self.logger = logging.getLogger(__name__)
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        self.logger.info(f"File created: {event.src_path}")
+        self._handle_file_event(event.src_path, "created")
+
+    def on_moved(self, event):
+        if event.is_directory:
+            return
+        self.logger.info(f"File moved: {event.src_path} -> {event.dest_path}")
+        self._handle_file_event(event.dest_path, "moved")
+
+    def on_modified(self, event):
+        if event.is_directory:
+            return
+        self.logger.info(f"File modified: {event.src_path}")
+        self._handle_file_event(event.src_path, "modified")
+
+    def _handle_file_event(self, file_path_str: str, event_type: str):
+        """Handle file system events for MP4 files"""
+        file_path = Path(file_path_str)
+        
+        self.logger.info(f"Handling {event_type} event for: {file_path}")
+        
+        if file_path.suffix.lower() != '.mp4':
+            self.logger.info(f"Ignoring non-MP4 file: {file_path}")
+            return
+        
+        # Check if already processed
+        if self.processor.file_manager.is_file_processed(file_path.name):
+            self.logger.info(f"File {file_path.name} already processed, skipping")
+            return
+        
+        # Check if we're already processing this file
+        if str(file_path) in self.processing_files:
+            self.logger.info(f"Already processing {file_path.name}, skipping")
+            return
+        
+        # Wait for file to be completely written
+        self.logger.info("Waiting 3 seconds for file to stabilize...")
+        time.sleep(3)
+        
+        # Verify file still exists and is accessible
+        if not file_path.exists():
+            self.logger.warning(f"File {file_path} no longer exists")
+            return
+        
+        self.logger.info(f"File size: {file_path.stat().st_size} bytes")
+        
+        # Process the file
+        self.processing_files.add(str(file_path))
+        
+        try:
+            self.logger.info(f"Starting to process {file_path.name}")
+            self.processor.process_meeting_file(file_path)
+        except Exception as e:
+            self.logger.error(f"Error processing {file_path}: {e}")
+        finally:
+            self.processing_files.discard(str(file_path))
+
+
+def main():
+    """Main application entry point"""
+    try:
+        logger = Logger.setup()
+        logger.info("Starting Meeting Processor...")
+        
+        # Initialize processor
+        processor = MeetingProcessor()
+        
+        # Process existing files on startup
+        processor.process_existing_files()
+        
+        # Set up file system monitoring
+        event_handler = MeetingFileHandler(processor)
+        observer = Observer()
+        observer.schedule(event_handler, str(processor.file_manager.input_dir), recursive=False)
+        
+        # Start monitoring
+        observer.start()
+        logger.info("Meeting Processor is running. Press Ctrl+C to stop.")
+        
+        # Periodic backup scan for new files
+        processed_files = set()
+        
+        try:
+            while True:
+                time.sleep(2)  # Check every 2 seconds for testing
+                
+                # Periodic scan for new files (backup for watchdog)
+                try:
+                    current_files = list(processor.file_manager.input_dir.glob("*.mp4"))
+                    for mp4_file in current_files:
+                        file_key = str(mp4_file)
+                        if (file_key not in processed_files and 
+                            not processor.file_manager.is_file_processed(mp4_file.name)):
+                            logger.info(f"Periodic scan found new file: {mp4_file.name}")
+                            processed_files.add(file_key)
+                            processor.process_meeting_file(mp4_file)
+                except Exception as e:
+                    logger.error(f"Error in periodic scan: {e}")
+                    
+        except KeyboardInterrupt:
+            logger.info("Stopping Meeting Processor...")
+            observer.stop()
+        
+        observer.join()
+        logger.info("Meeting Processor stopped.")
+        
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Fatal error: {str(e)}")
+        raise
+
+
+if __name__ == "__main__":
+    main()#!/usr/bin/env python3
 """
 Meeting Processor - Enhanced version with topic extraction and complete transcripts
 Refactored for better organization and maintainability
@@ -491,8 +1086,9 @@ RETURN ONLY THE TRANSCRIPT WITH SPEAKER LABELS - NO OTHER TEXT:"""
 class EntityDetector:
     """Detects entities from meeting transcripts"""
     
-    def __init__(self):
+    def __init__(self, anthropic_client: anthropic.Anthropic):
         self.logger = logging.getLogger(__name__)
+        self.anthropic_client = anthropic_client
         
         # Technology keywords specific to your Amazon Connect work
         self.technology_keywords = {
@@ -805,601 +1401,3 @@ Return ONLY a JSON object in this exact format:
             self.logger.error(f"❌ ENTITY DETECTION: Error in AI entity detection: {str(e)}")
             # Fallback to empty results
             return {'people': [], 'companies': [], 'technologies': []}
-
-
-class FileManager:
-    """Handles file operations and tracking"""
-    
-    def __init__(self, input_dir: Path, output_dir: Path, processed_dir: Path, 
-                 obsidian_vault_path: str, obsidian_folder_path: str):
-        self.input_dir = input_dir
-        self.output_dir = output_dir
-        self.processed_dir = processed_dir
-        self.obsidian_vault_path = obsidian_vault_path
-        self.obsidian_folder_path = obsidian_folder_path
-        
-        self.processed_files_log = self.output_dir / 'processed_files.txt'
-        self.processed_files = set()
-        self.logger = logging.getLogger(__name__)
-        
-        self._setup_directories()
-        self._load_processed_files()
-    
-    def _setup_directories(self):
-        """Create necessary directories"""
-        self.input_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.processed_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Create Obsidian vault directory structure
-        obsidian_full_path = Path(self.obsidian_vault_path) / self.obsidian_folder_path
-        obsidian_full_path.mkdir(parents=True, exist_ok=True)
-    
-    def _load_processed_files(self):
-        """Load list of already processed files"""
-        try:
-            # For testing - allow reprocessing files
-            testing_mode = os.getenv('TESTING_MODE', 'false').lower() == 'true'
-            if testing_mode:
-                self.logger.info("TESTING MODE: Clearing processed files list")
-                self.processed_files = set()
-                if self.processed_files_log.exists():
-                    self.processed_files_log.unlink()
-                return
-            
-            if self.processed_files_log.exists():
-                with open(self.processed_files_log, 'r') as f:
-                    self.processed_files = set(line.strip() for line in f if line.strip())
-                self.logger.info(f"Loaded {len(self.processed_files)} previously processed files")
-        except Exception as e:
-            self.logger.warning(f"Could not load processed files log: {e}")
-            self.processed_files = set()
-    
-    def mark_file_processed(self, filename: str):
-        """Mark a file as processed"""
-        try:
-            self.processed_files.add(filename)
-            with open(self.processed_files_log, 'a') as f:
-                f.write(f"{filename}\n")
-            self.logger.info(f"Marked {filename} as processed")
-        except Exception as e:
-            self.logger.error(f"Could not mark file as processed: {e}")
-    
-    def is_file_processed(self, filename: str) -> bool:
-        """Check if a file has already been processed"""
-        return filename in self.processed_files
-    
-    def save_to_obsidian_vault(self, filename: str, content: str) -> bool:
-        """Save content directly to Obsidian vault via file system"""
-        try:
-            vault_file_path = Path(self.obsidian_vault_path) / self.obsidian_folder_path / filename
-            vault_file_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(vault_file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            
-            self.logger.info(f"Successfully saved {filename} to Obsidian vault: {vault_file_path}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"Error saving to Obsidian vault: {str(e)}")
-            return False
-    
-    def move_processed_file(self, file_path: Path):
-        """Move processed MP4 file to processed directory"""
-        try:
-            processed_path = self.processed_dir / file_path.name
-            self.processed_dir.mkdir(parents=True, exist_ok=True)
-            
-            self.logger.info(f"Attempting to move {file_path} to {processed_path}")
-            
-            # Copy file
-            try:
-                shutil.copyfile(file_path, processed_path)
-                self.logger.info(f"Successfully copied {file_path.name}")
-            except Exception as copy_error:
-                self.logger.info(f"copyfile failed ({copy_error}), trying manual byte copy")
-                with open(file_path, 'rb') as src, open(processed_path, 'wb') as dst:
-                    dst.write(src.read())
-                self.logger.info(f"Successfully copied {file_path.name} using manual byte copy")
-            
-            # Wait and then remove original
-            time.sleep(1.0)
-            
-            try:
-                file_path.unlink()
-                self.logger.info(f"Successfully moved {file_path.name} to processed directory")
-            except Exception as delete_error:
-                self.logger.error(f"Copy succeeded but delete failed: {delete_error}")
-                self.logger.warning(f"File {file_path.name} copied to processed but original remains")
-                
-        except Exception as e:
-            self.logger.error(f"Error moving processed file: {str(e)}")
-            raise Exception(f"Unable to move processed file {file_path.name}")
-
-
-class ObsidianFormatter:
-    """Handles Obsidian note formatting"""
-    
-    def __init__(self, claude_analyzer: ClaudeAnalyzer):
-        self.claude_analyzer = claude_analyzer
-        self.logger = logging.getLogger(__name__)
-    
-    def create_obsidian_note(self, analysis_text: str, transcript: str, 
-                           filename: str, meeting_topic: str) -> str:
-        """Convert analysis to Obsidian note format"""
-        date_match = re.search(r'(\d{4}-\d{2}-\d{2})', filename)
-        meeting_date = date_match.group(1) if date_match else datetime.now().strftime("%Y-%m-%d")
-        
-        clean_title = meeting_topic.replace('-', ' ')
-        
-        self.logger.info("Identifying speakers in transcript with full content preservation...")
-        formatted_transcript = self.claude_analyzer.identify_speakers(transcript)
-        
-        # Build the note content without f-string to avoid syntax issues
-        note_parts = []
-        note_parts.append("Type: Meeting")
-        note_parts.append(f"Date: {meeting_date}")
-        note_parts.append("Project: ")
-        note_parts.append("Meeting Type: Technical Review / Sales Call / Planning / Standup / Demo / Crisis")
-        note_parts.append("Duration: ")
-        note_parts.append("Status: Processed")
-        note_parts.append("")
-        note_parts.append("## Attendees")
-        note_parts.append("Internal Team: ")
-        note_parts.append("Client/External: ")
-        note_parts.append("Key Decision Makers: ")
-        note_parts.append("")
-        note_parts.append("## Meeting Context")
-        note_parts.append("Purpose: ")
-        note_parts.append("Agenda Items: ")
-        note_parts.append("Background: ")
-        note_parts.append("Expected Outcomes: ")
-        note_parts.append("")
-        note_parts.append("## Key Decisions Made")
-        note_parts.append("<!-- Extracted automatically and manually added -->")
-        note_parts.append("")
-        note_parts.append("## Action Items")
-        note_parts.append("<!-- Links to task records -->")
-        note_parts.append("")
-        note_parts.append("## Technical Discussions")
-        note_parts.append("Architecture Decisions: ")
-        note_parts.append("Technology Choices: ")
-        note_parts.append("Integration Approaches: ")
-        note_parts.append("Performance Considerations: ")
-        note_parts.append("")
-        note_parts.append("## Issues Identified")
-        note_parts.append("Blockers: ")
-        note_parts.append("Technical Challenges: ")
-        note_parts.append("Business Risks: ")
-        note_parts.append("Dependencies: ")
-        note_parts.append("")
-        note_parts.append("## Opportunities Discovered")
-        note_parts.append("Upsell Potential: ")
-        note_parts.append("Future Projects: ")
-        note_parts.append("New Requirements: ")
-        note_parts.append("Partnership Options: ")
-        note_parts.append("")
-        note_parts.append("## Knowledge Captured")
-        note_parts.append("New Insights: ")
-        note_parts.append("Best Practices: ")
-        note_parts.append("Lessons Learned: ")
-        note_parts.append("Process Improvements: ")
-        note_parts.append("")
-        note_parts.append("## Follow-up Required")
-        note_parts.append("Next Meeting: ")
-        note_parts.append("Documentation Needed: ")
-        note_parts.append("Research Tasks: ")
-        note_parts.append("Client Communication: ")
-        note_parts.append("")
-        note_parts.append("## Entity Connections")
-        note_parts.append("People Mentioned: ")
-        note_parts.append("Companies Discussed: ")
-        note_parts.append("Technologies Referenced: ")
-        note_parts.append("Solutions Applied: ")
-        note_parts.append("Related Projects: ")
-        note_parts.append("")
-        note_parts.append("## Meeting Quality")
-        note_parts.append("Effectiveness: High / Medium / Low")
-        note_parts.append("Decision Quality: Good / Fair / Poor")
-        note_parts.append("Action Clarity: Clear / Unclear")
-        note_parts.append("Follow-up Needed: Yes / No")
-        note_parts.append("")
-        note_parts.append("## AI Analysis")
-        note_parts.append("")
-        note_parts.append(analysis_text)
-        note_parts.append("")
-        note_parts.append("## Complete Transcript")
-        note_parts.append("")
-        note_parts.append(formatted_transcript)
-        note_parts.append("")
-        note_parts.append("---")
-        note_parts.append("Tags: #meeting #project/active #type/technical-review")
-        note_parts.append("Audio File: ")
-        note_parts.append(f"Processed: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        note_parts.append("Auto-generated: Yes")
-        
-        return "\n".join(note_parts)
-
-
-class MeetingProcessor:
-    """Main meeting processor that orchestrates all components"""
-    
-    def __init__(self):
-        self.logger = Logger.setup()
-        
-        # Initialize API clients
-        self._init_api_clients()
-        
-        # Initialize directories and file management
-        self._init_directories()
-        
-        # Initialize components
-        self.audio_processor = AudioProcessor(self.file_manager.output_dir)
-        self.transcription_service = TranscriptionService(self.openai_client, self.audio_processor)
-        self.claude_analyzer = ClaudeAnalyzer(self.anthropic_client)
-        self.obsidian_formatter = ObsidianFormatter(self.claude_analyzer)
-        self.entity_detector = EntityDetector()
-        
-        self.logger.info(f"Monitoring directory: {self.file_manager.input_dir}")
-        self.logger.info(f"Output directory: {self.file_manager.output_dir}")
-        self.logger.info(f"Obsidian vault path: {self.file_manager.obsidian_vault_path}")
-    
-    def _init_api_clients(self):
-        """Initialize API clients"""
-        self.anthropic_key = os.getenv('ANTHROPIC_API_KEY')
-        self.openai_key = os.getenv('OPENAI_API_KEY')
-        
-        if not self.anthropic_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        
-        if not OPENAI_AVAILABLE:
-            self.logger.warning("OpenAI module not installed - will create placeholder analysis only")
-            self.openai_client = None
-        elif not self.openai_key:
-            self.logger.warning("OPENAI_API_KEY not found - will create placeholder analysis only")
-            self.openai_client = None
-        else:
-            self.openai_client = openai.OpenAI(api_key=self.openai_key)
-            self.logger.info("OpenAI client initialized successfully")
-        
-        self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_key)
-    
-    def _init_directories(self):
-        """Initialize directory structure and file manager"""
-        input_dir = Path(os.getenv('INPUT_DIR', '/app/input'))
-        output_dir = Path(os.getenv('OUTPUT_DIR', '/app/output'))
-        processed_dir = Path(os.getenv('PROCESSED_DIR', '/app/processed'))
-        obsidian_vault_path = os.getenv('OBSIDIAN_VAULT_PATH', '/app/obsidian_vault')
-        obsidian_folder_path = os.getenv('OBSIDIAN_FOLDER_PATH', 'Meetings')
-        
-        self.file_manager = FileManager(
-            input_dir, output_dir, processed_dir,
-            obsidian_vault_path, obsidian_folder_path
-        )
-    
-    def create_placeholder_analysis(self, flac_path: Path) -> Dict[str, Any]:
-        """Create placeholder analysis when transcription is not available"""
-        file_size = flac_path.stat().st_size / (1024 * 1024)
-        
-        analysis = f"""# Meeting Analysis - {flac_path.stem}
-
-**File:** {flac_path.name}
-**Size:** {file_size:.2f} MB
-**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-
----
-
-## Audio File Processed
-
-This system successfully detected and converted your meeting recording to FLAC format. 
-
-**Note:** To enable full transcription and analysis, ensure both API keys are properly configured.
-
-## Current Status
-
-- ✅ MP4 detected and processed
-- ✅ Audio converted to FLAC format
-- ⏳ Transcription requires OpenAI API key
-- ⏳ Analysis requires transcript
-
-## File Location
-
-Your audio file has been saved and is ready for processing:
-- **FLAC File:** Available in the output directory
-- **Original MP4:** Moved to processed directory
-"""
-
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "source_file": flac_path.name,
-            "transcript": "Transcription not available - OpenAI API key required",
-            "analysis": analysis,
-            "file_size_mb": round(file_size, 2),
-            "status": "audio_converted_awaiting_api_key"
-        }
-    
-    def save_analysis(self, analysis: Dict[str, Any], original_filename: str) -> Path:
-        """Save the analysis to files including Obsidian format"""
-        # Extract meeting topic for filename if we have a transcript
-        meeting_topic = "Meeting-Recording"  # Default
-        if ('transcript' in analysis and 
-            not analysis['transcript'].startswith('Transcription not available')):
-            meeting_topic = self.claude_analyzer.extract_meeting_topic(analysis['transcript'])
-        
-        # Create enhanced filename with topic, date, and time
-        meeting_date = datetime.now().strftime("%Y-%m-%d")
-        meeting_time = datetime.now().strftime("%H-%M")
-        enhanced_filename = f"{meeting_topic}_{meeting_date}_{meeting_time}"
-        
-        # Create Obsidian note if we have a transcript
-        if ('transcript' in analysis and 
-            not analysis['transcript'].startswith('Transcription not available')):
-            obsidian_content = self.obsidian_formatter.create_obsidian_note(
-                analysis['analysis'], 
-                analysis['transcript'], 
-                original_filename,
-                meeting_topic
-            )
-            
-            # Save Obsidian note with enhanced filename
-            obsidian_filename = f"{enhanced_filename}_meeting.md"
-            obsidian_path = self.file_manager.output_dir / obsidian_filename
-            
-            with open(obsidian_path, 'w', encoding='utf-8') as f:
-                f.write(obsidian_content)
-            
-            self.logger.info(f"Obsidian meeting note saved to {obsidian_path}")
-            
-            # Save to Obsidian vault via direct file system access
-            success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
-            if success:
-                self.logger.info("Meeting note successfully saved to Obsidian vault")
-            else:
-                self.logger.warning("Failed to save to Obsidian vault - note saved locally only")
-        
-        # Save original JSON format with enhanced filename
-        analysis_filename = f"{enhanced_filename}_analysis.json"
-        analysis_path = self.file_manager.output_dir / analysis_filename
-        
-        with open(analysis_path, 'w', encoding='utf-8') as f:
-            json.dump(analysis, f, indent=2, ensure_ascii=False)
-        
-        # Save original markdown format with enhanced filename
-        md_filename = f"{enhanced_filename}_analysis.md"
-        md_path = self.file_manager.output_dir / md_filename
-        
-        with open(md_path, 'w', encoding='utf-8') as f:
-            f.write(f"# Meeting Analysis - {meeting_topic}\n\n")
-            f.write(f"**Processed:** {analysis['timestamp']}\n")
-            f.write(f"**Source:** {analysis['source_file']}\n\n")
-            f.write("---\n\n")
-            
-            if ('transcript' in analysis and 
-                not analysis['transcript'].startswith('Transcription not available')):
-                f.write("## Complete Transcript\n\n")
-                f.write(analysis['transcript'])
-                f.write("\n\n---\n\n")
-                f.write("## Analysis\n\n")
-                f.write(analysis['analysis'])
-                
-                # Save separate transcript file with enhanced filename
-                txt_filename = f"{enhanced_filename}_transcript.txt"
-                txt_path = self.file_manager.output_dir / txt_filename
-                with open(txt_path, 'w', encoding='utf-8') as txt_file:
-                    txt_file.write(analysis['transcript'])
-            else:
-                f.write(analysis['analysis'])
-        
-        self.logger.info(f"Analysis saved to {analysis_path} and {md_path}")
-        return analysis_path
-    
-    def process_meeting_file(self, mp4_path: Path):
-        """Complete processing pipeline for a meeting file"""
-        try:
-            self.logger.info(f"Starting processing of {mp4_path}")
-            
-            # Convert MP4 to FLAC
-            flac_path = self.audio_processor.convert_mp4_to_flac(mp4_path)
-            if not flac_path:
-                self.logger.error(f"Failed to convert {mp4_path}")
-                return
-            
-            # Process with transcription and analysis
-            analysis = self._process_with_transcription(flac_path)
-            if not analysis:
-                self.logger.error(f"Failed to process {flac_path}")
-                return
-            
-            # Save results and move processed file
-            self.save_analysis(analysis, mp4_path.name)
-            self.file_manager.move_processed_file(mp4_path)
-            self.file_manager.mark_file_processed(mp4_path.name)
-            
-            self.logger.info(f"Successfully completed processing of {mp4_path.name}")
-            
-        except Exception as e:
-            self.logger.error(f"Error in processing pipeline: {str(e)}")
-    
-    def _process_with_transcription(self, flac_path: Path) -> Optional[Dict[str, Any]]:
-        """Process FLAC file - either with full transcription or placeholder"""
-        try:
-            if self.openai_client:
-                self.logger.info(f"Processing {flac_path} with Whisper + Claude AI")
-                
-                # Transcribe audio
-                transcript = self.transcription_service.transcribe_audio(flac_path)
-                if not transcript:
-                    self.logger.error(f"Failed to transcribe {flac_path}")
-                    return self.create_placeholder_analysis(flac_path)
-                
-                # Analyze with Claude
-                result = self.claude_analyzer.analyze_transcript(transcript, flac_path.name)
-                if not result:
-                    self.logger.error(f"Failed to analyze transcript with Claude AI")
-                    return self.create_placeholder_analysis(flac_path)
-                
-                # Detect entities
-                entities = self.entity_detector.detect_all_entities(transcript, flac_path.name)
-                result['entities'] = entities
-                
-                return result
-            else:
-                self.logger.info(f"Creating placeholder analysis for {flac_path}")
-                return self.create_placeholder_analysis(flac_path)
-            
-        except Exception as e:
-            self.logger.error(f"Error processing: {str(e)}")
-            return self.create_placeholder_analysis(flac_path)
-    
-    def process_existing_files(self):
-        """Process any existing MP4 files on startup"""
-        self.logger.info("Checking for existing MP4 files...")
-        
-        all_files = list(self.file_manager.input_dir.iterdir())
-        self.logger.info(f"All files in directory: {[f.name for f in all_files]}")
-        
-        existing_files = [
-            f for f in all_files 
-            if f.is_file() and f.suffix.lower() == '.mp4'
-        ]
-        
-        self.logger.info(f"MP4 files found: {[f.name for f in existing_files]}")
-        
-        if existing_files:
-            self.logger.info(f"Found {len(existing_files)} existing MP4 file(s)")
-            for mp4_file in existing_files:
-                if not self.file_manager.is_file_processed(mp4_file.name):
-                    self.logger.info(f"Processing existing file: {mp4_file.name}")
-                    self.process_meeting_file(mp4_file)
-                else:
-                    self.logger.info(f"File {mp4_file.name} already processed, skipping")
-        else:
-            self.logger.info("No existing MP4 files found")
-
-
-class MeetingFileHandler(FileSystemEventHandler):
-    """File system event handler for new MP4 files"""
-    
-    def __init__(self, processor: MeetingProcessor):
-        self.processor = processor
-        self.processing_files = set()
-        self.logger = logging.getLogger(__name__)
-
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        self.logger.info(f"File created: {event.src_path}")
-        self._handle_file_event(event.src_path, "created")
-
-    def on_moved(self, event):
-        if event.is_directory:
-            return
-        self.logger.info(f"File moved: {event.src_path} -> {event.dest_path}")
-        self._handle_file_event(event.dest_path, "moved")
-
-    def on_modified(self, event):
-        if event.is_directory:
-            return
-        self.logger.info(f"File modified: {event.src_path}")
-        self._handle_file_event(event.src_path, "modified")
-
-    def _handle_file_event(self, file_path_str: str, event_type: str):
-        """Handle file system events for MP4 files"""
-        file_path = Path(file_path_str)
-        
-        self.logger.info(f"Handling {event_type} event for: {file_path}")
-        
-        if file_path.suffix.lower() != '.mp4':
-            self.logger.info(f"Ignoring non-MP4 file: {file_path}")
-            return
-        
-        # Check if already processed
-        if self.processor.file_manager.is_file_processed(file_path.name):
-            self.logger.info(f"File {file_path.name} already processed, skipping")
-            return
-        
-        # Check if we're already processing this file
-        if str(file_path) in self.processing_files:
-            self.logger.info(f"Already processing {file_path.name}, skipping")
-            return
-        
-        # Wait for file to be completely written
-        self.logger.info("Waiting 3 seconds for file to stabilize...")
-        time.sleep(3)
-        
-        # Verify file still exists and is accessible
-        if not file_path.exists():
-            self.logger.warning(f"File {file_path} no longer exists")
-            return
-        
-        self.logger.info(f"File size: {file_path.stat().st_size} bytes")
-        
-        # Process the file
-        self.processing_files.add(str(file_path))
-        
-        try:
-            self.logger.info(f"Starting to process {file_path.name}")
-            self.processor.process_meeting_file(file_path)
-        except Exception as e:
-            self.logger.error(f"Error processing {file_path}: {e}")
-        finally:
-            self.processing_files.discard(str(file_path))
-
-
-def main():
-    """Main application entry point"""
-    try:
-        logger = Logger.setup()
-        logger.info("Starting Meeting Processor...")
-        
-        # Initialize processor
-        processor = MeetingProcessor()
-        
-        # Process existing files on startup
-        processor.process_existing_files()
-        
-        # Set up file system monitoring
-        event_handler = MeetingFileHandler(processor)
-        observer = Observer()
-        observer.schedule(event_handler, str(processor.file_manager.input_dir), recursive=False)
-        
-        # Start monitoring
-        observer.start()
-        logger.info("Meeting Processor is running. Press Ctrl+C to stop.")
-        
-        # Periodic backup scan for new files
-        processed_files = set()
-        
-        try:
-            while True:
-                time.sleep(2)  # Check every 2 seconds for testing
-                
-                # Periodic scan for new files (backup for watchdog)
-                try:
-                    current_files = list(processor.file_manager.input_dir.glob("*.mp4"))
-                    for mp4_file in current_files:
-                        file_key = str(mp4_file)
-                        if (file_key not in processed_files and 
-                            not processor.file_manager.is_file_processed(mp4_file.name)):
-                            logger.info(f"Periodic scan found new file: {mp4_file.name}")
-                            processed_files.add(file_key)
-                            processor.process_meeting_file(mp4_file)
-                except Exception as e:
-                    logger.error(f"Error in periodic scan: {e}")
-                    
-        except KeyboardInterrupt:
-            logger.info("Stopping Meeting Processor...")
-            observer.stop()
-        
-        observer.join()
-        logger.info("Meeting Processor stopped.")
-        
-    except Exception as e:
-        logger = logging.getLogger(__name__)
-        logger.error(f"Fatal error: {str(e)}")
-        raise
-
-
-if __name__ == "__main__":
-    main()
