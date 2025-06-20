@@ -1,12 +1,12 @@
 """
-AI context extraction for Meeting Processor
+AI Context Extraction for Entity Management
 Extracts intelligent context about entities from meeting transcripts
 """
 
-import json
+import os
 from pathlib import Path
 from typing import Dict, Optional, TYPE_CHECKING
-from utils.logger import LoggerMixin, log_success, log_error, log_warning
+from utils.logger import LoggerMixin
 
 if TYPE_CHECKING:
     from core.file_manager import FileManager
@@ -19,256 +19,261 @@ class AIContextExtractor(LoggerMixin):
         self.anthropic_client = anthropic_client
         self.file_manager = file_manager
         self.model = "claude-3-5-sonnet-20241022"
+        self.employer = self._find_employer_context()
     
-    def get_employer_context(self) -> Optional[str]:
-        """Find the user's current employer company for context"""
+    def _find_employer_context(self) -> str:
+        """Find the user's current employer from environment or Obsidian vault"""
         try:
+            # First check environment variable
+            company_from_env = os.getenv('OBSIDIAN_COMPANY_NAME', '')
+            if company_from_env:
+                self.logger.info(f"🏢 Using employer from environment: {company_from_env}")
+                return company_from_env
+            
+            # Fallback to searching vault
             companies_path = Path(self.file_manager.obsidian_vault_path) / "Companies"
             if not companies_path.exists():
-                return None
-                
-            # Look for company with "Current Employer: Yes"
+                return ""
+            
+            # Look for company marked as current employer
             for company_file in companies_path.glob("*.md"):
-                try:
-                    with open(company_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        if "**Current Employer:** Yes" in content:
-                            company_name = company_file.stem.replace('-', ' ')
-                            self.logger.info(f"🏢 Found employer context: {company_name}")
-                            return company_name
-                except Exception:
-                    continue
-                    
-            return None
+                with open(company_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    if "**Current Employer:** Yes" in content:
+                        company_name = company_file.stem.replace('-', ' ')
+                        self.logger.info(f"🏢 Found employer context: {company_name}")
+                        return company_name
+            
+            return ""
+            
         except Exception as e:
-            log_error(self.logger, "Error reading employer context", e)
-            return None
-
-    def get_meeting_transcript(self, meeting_filename: str) -> Optional[str]:
-        """Extract transcript from meeting file for AI analysis"""
+            self.logger.error(f"Error finding employer context: {e}")
+            return ""
+    
+    def get_person_context(self, person_name: str, meeting_filename: str) -> Dict[str, str]:
+        """Extract AI context about a person"""
+        if not self.anthropic_client:
+            return self._get_default_person_context()
+        
         try:
-            meeting_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / f"{meeting_filename}.md"
+            # Read the transcript from the meeting file
+            meeting_path = Path(self.file_manager.output_dir) / f"{meeting_filename}.md"
+            transcript_snippet = ""
             
             if meeting_path.exists():
                 with open(meeting_path, 'r', encoding='utf-8') as f:
                     content = f.read()
-                    
-                    # Extract transcript section
-                    if "## Complete Transcript" in content:
-                        transcript_start = content.find("## Complete Transcript")
-                        transcript_section = content[transcript_start:]
-                        return transcript_section[:5000]  # First 5000 chars for analysis
+                    # Extract a snippet around person's name
+                    name_index = content.lower().find(person_name.lower())
+                    if name_index > 0:
+                        start = max(0, name_index - 500)
+                        end = min(len(content), name_index + 500)
+                        transcript_snippet = content[start:end]
             
-            return None
-        except Exception as e:
-            log_error(self.logger, f"Error reading meeting transcript", e)
-            return None
+            prompt = f"""Based on this meeting transcript snippet, extract context about {person_name}.
+Focus on their role, company affiliation, and relationship to {self.employer if self.employer else 'the organization'}.
 
-    def get_person_context(self, person_name: str, meeting_filename: str) -> Dict[str, str]:
-        """Use AI to extract context about a person from the meeting transcript"""
-        try:
-            employer = self.get_employer_context() or "our company"
-            transcript = self.get_meeting_transcript(meeting_filename)
-            
-            if not transcript:
-                return {"employer": employer}
-            
-            prompt = f"""Analyze this meeting transcript and extract context about {person_name}. 
+Transcript snippet:
+{transcript_snippet}
 
-My company: {employer}
-Person to analyze: {person_name}
+Provide brief, factual responses for:
+1. Role/Title
+2. Company/Organization
+3. Relationship to {self.employer if self.employer else 'us'}
+4. Authority level
+5. Department
+6. Key projects mentioned
+7. Any additional relevant notes
 
-Extract only information that is explicitly mentioned or clearly implied in the transcript:
-1. Role/Title (if mentioned)
-2. Company they work for (if mentioned) 
-3. Email or contact info (if mentioned)
-4. Their relationship to {employer} (colleague, client contact, vendor rep, partner, prospect)
-5. Decision-making authority (if implied)
-6. Department or team (if mentioned)
-7. Key projects or initiatives they're involved in
-8. Important context about them
+Format as JSON."""
 
-Transcript excerpt:
-{transcript[:3000]}
-
-Return ONLY a JSON object with these fields (empty string if not found):
-{{"role": "", "company": "", "email": "", "phone": "", "relationship": "", "authority": "", "department": "", "projects": "", "notes": "", "employer": "{employer}"}}"""
-
-            context = self._get_ai_context(prompt, person_name, "person")
-            return context
-            
-        except Exception as e:
-            log_error(self.logger, f"Error getting AI person context for {person_name}", e)
-            return {"employer": self.get_employer_context() or "our company"}
-
-    def get_company_context(self, company_name: str, meeting_filename: str) -> Dict[str, str]:
-        """Use AI to extract context about a company from the meeting transcript"""
-        try:
-            employer = self.get_employer_context() or "our company"
-            transcript = self.get_meeting_transcript(meeting_filename)
-            
-            if not transcript:
-                return {"employer": employer}
-            
-            prompt = f"""Analyze this meeting transcript and extract context about {company_name}.
-
-My company: {employer}
-Company to analyze: {company_name}
-
-Extract only information that is explicitly mentioned or clearly implied:
-1. Industry or business type
-2. Relationship to {employer} (client, vendor, partner, competitor, prospect)
-3. Size or scale (if mentioned)
-4. Location (if mentioned)
-5. Current projects or engagement with {employer}
-6. Key people mentioned from this company
-7. Technologies they use (if mentioned)
-8. Business needs or challenges discussed
-
-Transcript excerpt:
-{transcript[:3000]}
-
-Return ONLY a JSON object with these fields (empty string if not found):
-{{"industry": "", "relationship": "", "size": "", "location": "", "projects": "", "key_contacts": "", "technologies": "", "business_needs": "", "notes": "", "employer": "{employer}"}}"""
-
-            context = self._get_ai_context(prompt, company_name, "company")
-            return context
-            
-        except Exception as e:
-            log_error(self.logger, f"Error getting AI company context for {company_name}", e)
-            return {"employer": employer}
-    
-    def get_technology_context(self, tech_name: str, meeting_filename: str) -> Dict[str, str]:
-        """Use AI to extract context about a technology from the meeting transcript"""
-        try:
-            employer = self.get_employer_context() or "our company"
-            transcript = self.get_meeting_transcript(meeting_filename)
-            
-            if not transcript:
-                return {"employer": employer}
-            
-            prompt = f"""Analyze this meeting transcript and extract context about {tech_name}.
-
-My company: {employer}
-Technology to analyze: {tech_name}
-
-Extract only information that is explicitly mentioned or clearly implied:
-1. How {employer} uses this technology
-2. Implementation status (planning, in progress, deployed, evaluating)
-3. Use cases or applications discussed
-4. Integration points with other systems
-5. Business value or benefits mentioned
-6. Challenges or issues discussed
-7. Who is responsible for this technology
-8. Future plans or decisions needed
-
-Transcript excerpt:
-{transcript[:3000]}
-
-Return ONLY a JSON object with these fields (empty string if not found):
-{{"usage": "", "status": "", "use_cases": "", "integrations": "", "business_value": "", "challenges": "", "owner": "", "future_plans": "", "category": "", "employer": "{employer}"}}"""
-
-            context = self._get_ai_context(prompt, tech_name, "technology")
-            return context
-            
-        except Exception as e:
-            log_error(self.logger, f"Error getting AI technology context for {tech_name}", e)
-            return {"employer": employer}
-    
-    def _get_ai_context(self, prompt: str, entity_name: str, entity_type: str) -> Dict[str, str]:
-        """Get AI context using Claude"""
-        try:
             response = self.anthropic_client.messages.create(
                 model=self.model,
                 max_tokens=300,
                 messages=[{"role": "user", "content": prompt}]
             )
             
-            response_text = response.content[0].text.strip()
+            # Parse response and extract relevant fields
+            context = self._parse_context_response(response.content[0].text)
+            context['employer'] = self.employer
             
-            # Parse JSON response
-            json_start = response_text.find('{')
-            json_end = response_text.rfind('}') + 1
+            return context
             
-            if json_start >= 0 and json_end > json_start:
+        except Exception as e:
+            self.logger.error(f"Error getting AI context for person {person_name}: {e}")
+            return self._get_default_person_context()
+    
+    def get_company_context(self, company_name: str, meeting_filename: str) -> Dict[str, str]:
+        """Extract AI context about a company"""
+        if not self.anthropic_client:
+            return self._get_default_company_context()
+        
+        try:
+            # Similar logic to person context
+            meeting_path = Path(self.file_manager.output_dir) / f"{meeting_filename}.md"
+            transcript_snippet = ""
+            
+            if meeting_path.exists():
+                with open(meeting_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    name_index = content.lower().find(company_name.lower())
+                    if name_index > 0:
+                        start = max(0, name_index - 500)
+                        end = min(len(content), name_index + 500)
+                        transcript_snippet = content[start:end]
+            
+            prompt = f"""Based on this meeting transcript snippet, extract context about {company_name}.
+Focus on their business relationship to {self.employer if self.employer else 'our organization'}.
+
+Transcript snippet:
+{transcript_snippet}
+
+Provide brief responses for:
+1. Industry/Sector
+2. Company size
+3. Relationship to {self.employer if self.employer else 'us'} (client/vendor/partner/prospect)
+4. Business needs discussed
+5. Key contacts mentioned
+6. Technologies they use
+7. Active projects
+8. Additional notes
+
+Format as JSON."""
+
+            response = self.anthropic_client.messages.create(
+                model=self.model,
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            context = self._parse_context_response(response.content[0].text)
+            context['employer'] = self.employer
+            
+            return context
+            
+        except Exception as e:
+            self.logger.error(f"Error getting AI context for company {company_name}: {e}")
+            return self._get_default_company_context()
+    
+    def get_technology_context(self, tech_name: str, meeting_filename: str) -> Dict[str, str]:
+        """Extract AI context about a technology"""
+        if not self.anthropic_client:
+            return self._get_default_technology_context()
+        
+        try:
+            meeting_path = Path(self.file_manager.output_dir) / f"{meeting_filename}.md"
+            transcript_snippet = ""
+            
+            if meeting_path.exists():
+                with open(meeting_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    name_index = content.lower().find(tech_name.lower())
+                    if name_index > 0:
+                        start = max(0, name_index - 500)
+                        end = min(len(content), name_index + 500)
+                        transcript_snippet = content[start:end]
+            
+            prompt = f"""Based on this meeting transcript snippet, extract context about {tech_name} technology.
+
+Transcript snippet:
+{transcript_snippet}
+
+Provide brief responses for:
+1. Category (database/framework/service/tool/etc)
+2. Current status (evaluating/implementing/in use)
+3. How it's being used
+4. Use cases mentioned
+5. Integration points
+6. Business value
+7. Challenges mentioned
+8. Future plans
+9. Owner/responsible party
+
+Format as JSON."""
+
+            response = self.anthropic_client.messages.create(
+                model=self.model,
+                max_tokens=300,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            context = self._parse_context_response(response.content[0].text)
+            
+            return context
+            
+        except Exception as e:
+            self.logger.error(f"Error getting AI context for technology {tech_name}: {e}")
+            return self._get_default_technology_context()
+    
+    def _parse_context_response(self, response_text: str) -> Dict[str, str]:
+        """Parse AI response into context dictionary"""
+        import json
+        
+        try:
+            # Try to parse as JSON first
+            if '{' in response_text and '}' in response_text:
+                json_start = response_text.find('{')
+                json_end = response_text.rfind('}') + 1
                 json_str = response_text[json_start:json_end]
+                
                 context = json.loads(json_str)
-                
-                relationship = context.get('relationship', 'unknown')
-                self.logger.info(f"🧠 AI extracted context for {entity_name}: {relationship}")
-                return context
-            else:
-                log_warning(self.logger, f"No valid JSON in AI response for {entity_name}")
-                return {"employer": self.get_employer_context() or "our company"}
-            
-        except json.JSONDecodeError as e:
-            log_error(self.logger, f"Failed to parse AI response JSON for {entity_name}", e)
-            return {"employer": self.get_employer_context() or "our company"}
-        except Exception as e:
-            log_error(self.logger, f"Error getting AI context for {entity_name}", e)
-            return {"employer": self.get_employer_context() or "our company"}
+                # Convert all values to strings
+                return {k: str(v) if v else '' for k, v in context.items()}
+        except:
+            pass
+        
+        # Fallback to parsing key-value pairs
+        context = {}
+        lines = response_text.split('\n')
+        
+        for line in lines:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().lower().replace(' ', '_').replace('/', '_')
+                context[key] = value.strip()
+        
+        return context
     
-    def validate_context(self, context: Dict[str, str], entity_type: str) -> bool:
-        """Validate that context has expected fields for entity type"""
-        required_fields = {
-            'person': ['employer', 'relationship'],
-            'company': ['employer', 'relationship'],
-            'technology': ['employer', 'status']
+    def _get_default_person_context(self) -> Dict[str, str]:
+        """Default context for a person"""
+        return {
+            'role': '',
+            'company': '',
+            'relationship': '',
+            'authority': '',
+            'department': '',
+            'projects': '',
+            'notes': '',
+            'email': '',
+            'phone': '',
+            'employer': self.employer
         }
-        
-        fields = required_fields.get(entity_type, [])
-        
-        for field in fields:
-            if field not in context:
-                return False
-        
-        return True
     
-    def enhance_context_with_history(self, context: Dict[str, str], entity_name: str, entity_type: str) -> Dict[str, str]:
-        """Enhance context by checking existing entity notes for additional info"""
-        try:
-            existing_note = self._find_existing_entity_note(entity_name, entity_type)
-            if existing_note:
-                with open(existing_note, 'r', encoding='utf-8') as f:
-                    existing_content = f.read()
-                
-                # Extract existing info to enhance context
-                enhanced_context = context.copy()
-                
-                # Look for email in existing note
-                if not enhanced_context.get('email') and 'Email:' in existing_content:
-                    email_line = [line for line in existing_content.split('\n') if 'Email:' in line]
-                    if email_line:
-                        email = email_line[0].split('Email:')[1].strip()
-                        if email and email != '':
-                            enhanced_context['email'] = email
-                
-                return enhanced_context
-            
-            return context
-            
-        except Exception as e:
-            log_error(self.logger, f"Error enhancing context for {entity_name}", e)
-            return context
+    def _get_default_company_context(self) -> Dict[str, str]:
+        """Default context for a company"""
+        return {
+            'industry': '',
+            'size': '',
+            'location': '',
+            'relationship': '',
+            'business_needs': '',
+            'key_contacts': '',
+            'technologies': '',
+            'projects': '',
+            'notes': '',
+            'employer': self.employer
+        }
     
-    def _find_existing_entity_note(self, entity_name: str, entity_type: str) -> Optional[Path]:
-        """Find existing entity note"""
-        try:
-            safe_name = entity_name.replace(' ', '-').replace('/', '-')
-            filename = f"{safe_name}.md"
-            
-            folder_map = {
-                'person': 'People',
-                'company': 'Companies', 
-                'technology': 'Technologies'
-            }
-            
-            folder = folder_map.get(entity_type)
-            if not folder:
-                return None
-            
-            entity_path = Path(self.file_manager.obsidian_vault_path) / folder / filename
-            return entity_path if entity_path.exists() else None
-            
-        except Exception:
-            return None
+    def _get_default_technology_context(self) -> Dict[str, str]:
+        """Default context for a technology"""
+        return {
+            'category': '',
+            'status': '',
+            'usage': '',
+            'use_cases': '',
+            'integrations': '',
+            'business_value': '',
+            'challenges': '',
+            'future_plans': '',
+            'owner': ''
+        }

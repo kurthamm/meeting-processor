@@ -64,45 +64,136 @@ class ObsidianEntityManager(LoggerMixin):
             self.logger.debug(f"🧠 Getting AI context for person: {person_name}")
             context = self.ai_context.get_person_context(person_name, meeting_filename)
             
+            # Determine relationship tag
+            relationship = context.get('relationship', '').lower().replace(' ', '-')
+            if not relationship:
+                relationship = 'contact'
+            
+            # Build the person note content - using triple quotes to avoid escaping issues
+            dataview_assigned_tasks = '''```dataview
+task
+from "Tasks"
+where contains(file.text, "Assigned To: ''' + person_name + '''")
+where !completed
+sort priority desc
+```'''
+
+            dataview_mentioned_tasks = '''```dataview
+list
+from "Tasks"
+where contains(file.text, "''' + person_name + '''") 
+where !contains(file.text, "Assigned To: ''' + person_name + '''")
+sort file.ctime desc
+```'''
+
+            dataview_meetings = '''```dataview
+table without id 
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where contains(people-mentioned, "[[People/''' + safe_name + '''|''' + person_name + ''']]")
+sort date desc
+```'''
+
+            dataview_technologies = '''```dataview
+list
+from "Technologies"
+where contains(file.inlinks, this.file.link) or contains(file.text, "''' + person_name + '''")
+```'''
+
+            dataview_companies = '''```dataview
+table without id
+  file.link as "Company",
+  relationship-to-neuraflash as "Relationship"
+from "Companies"
+where contains(file.text, "''' + person_name + '''")
+```'''
+
             content = f"""# {person_name}
 
-Type: Person
-Status: Active
-First Mentioned: {meeting_date}
+**Type:** Person
+**Status:** Active
+**First Detected:** {meeting_date}
+**Last Updated:** {meeting_date}
 
-## Contact Information
-Email: {context.get('email', '')}
-Phone: {context.get('phone', '')}
-Role: {context.get('role', '')}
-Company: {context.get('company', '')}
+## Basic Information
+**Full Name:** {person_name}
+**Title/Role:** {context.get('role', '')}
+**Email:** {context.get('email', '')}
+**Phone:** {context.get('phone', '')}
+**Company:** {context.get('company', '')}
+**Department:** {context.get('department', '')}
+**Location:** 
 
-## Relationship Context
+## Professional Context
 **Relationship to {context.get('employer', 'Us')}:** {context.get('relationship', '')}
 **Decision Authority:** {context.get('authority', '')}
-**Department:** {context.get('department', '')}
+**Reports To:** 
+**Direct Reports:** 
+
+## Expertise & Skills
+**Primary Skills:** 
+**Technologies Known:** 
+**Specializations:** 
+**Industry Experience:** 
+
+## Communication Style
+**Preferred Contact Method:** 
+**Response Time:** 
+**Meeting Preferences:** 
+**Technical Level:** 
+
+## Active Tasks & Responsibilities
+### Assigned Tasks
+{dataview_assigned_tasks}
+
+### Tasks Mentioned In
+{dataview_mentioned_tasks}
+
+## Project Involvement
+**Current Projects:** {context.get('projects', '')}
+**Past Projects:** 
+**Key Contributions:** 
 
 ## Meeting History
+<!-- Auto-updated by meeting processor -->
 - [[{meeting_filename}]] - {meeting_date}
 
-## Notes
+### All Meetings Attended
+{dataview_meetings}
+
+## Technologies Used
+{dataview_technologies}
+
+## Companies Involved With
+{dataview_companies}
+
+## Key Interactions
+**Topics They Care About:** 
+**Common Questions:** 
+**Decision Patterns:** 
+**Pain Points:** 
+
+## Relationship Intelligence
+**Influence Network:** 
+**Key Relationships:** 
+**Communication Frequency:** 
+**Last Interaction:** {meeting_date}
+
+## Notes & Observations
 {context.get('notes', '')}
+<!-- Add manual observations about working style, preferences, etc. -->
 
-## Projects Involved
-{context.get('projects', '')}
-
-## Key Relationships
-
-
-## Communication Preferences
-
-
-## Expertise Areas
-
+## Action Items
+- [ ] Send introduction email
+- [ ] Schedule follow-up meeting
+- [ ] Share requested resources
 
 ---
-Tags: #person #contact
-Created: {meeting_date}
-Last Updated: {meeting_date}
+**Tags:** #person #contact #{relationship}
+**Created:** {meeting_date}
+**Source:** Auto-generated from meeting transcript
 """
             self._save_entity_note("People", filename, content)
             self.logger.info(f"👤 Created new person note: {person_name}")
@@ -124,6 +215,69 @@ Last Updated: {meeting_date}
             self.logger.debug(f"🧠 Getting AI context for company: {company_name}")
             context = self.ai_context.get_company_context(company_name, meeting_filename)
             
+            # Build dataview queries
+            dataview_contacts = '''```dataview
+table without id
+  file.link as "Person",
+  title-role as "Role",
+  email as "Email"
+from "People"
+where company = "''' + company_name + '''"
+sort title-role asc
+```'''
+
+            dataview_meetings = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where contains(companies-discussed, "[[Companies/''' + safe_name + '''|''' + company_name + ''']]")
+sort date desc
+```'''
+
+            dataview_projects = '''```dataview
+list
+from "Meetings"
+where contains(companies-discussed, "[[Companies/''' + safe_name + '''|''' + company_name + ''']]")
+where contains(tags, "#project") or contains(file.name, "project")
+sort file.ctime desc
+```'''
+
+            dataview_technologies = '''```dataview
+list
+from "Technologies"
+where contains(file.inlinks, this.file.link) or contains(file.text, "''' + company_name + '''")
+```'''
+
+            dataview_tasks = '''```dataview
+task
+from "Tasks"
+where contains(file.text, "''' + company_name + '''")
+where !completed
+sort priority desc
+```'''
+
+            dataview_decision_makers = '''```dataview
+table without id
+  file.link as "Person",
+  decision-authority as "Authority Level"
+from "People"
+where company = "''' + company_name + '''"
+where decision-authority != null
+```'''
+
+            dataview_communications = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  key-decisions-made as "Key Decisions"
+from "Meetings"
+where contains(companies-discussed, "[[Companies/''' + safe_name + '''|''' + company_name + ''']]")
+sort date desc
+limit 5
+```'''
+
             content = f"""# {company_name}
 
 Type: Company
@@ -140,6 +294,9 @@ Website:
 ## Key Contacts
 {context.get('key_contacts', '')}
 
+### All Contacts from This Company
+{dataview_contacts}
+
 ## Relationship Context
 **Relationship to {context.get('employer', 'Us')}:** {context.get('relationship', '')}
 **Business Needs:** {context.get('business_needs', '')}
@@ -147,11 +304,23 @@ Website:
 ## Meeting History
 - [[{meeting_filename}]] - {meeting_date}
 
+### All Meetings with This Company
+{dataview_meetings}
+
 ## Active Projects
 {context.get('projects', '')}
 
+### Project Details
+{dataview_projects}
+
 ## Technologies Used
 {context.get('technologies', '')}
+
+### Technology Stack
+{dataview_technologies}
+
+## Active Tasks
+{dataview_tasks}
 
 ## Relationship Status
 - [ ] Current Employer
@@ -167,10 +336,11 @@ Contract Value:
 Payment Terms: 
 
 ## Decision Makers
-
+{dataview_decision_makers}
 
 ## Communication History
-
+### Recent Communications
+{dataview_communications}
 
 ## Notes
 {context.get('notes', '')}
@@ -200,6 +370,59 @@ Last Updated: {meeting_date}
             self.logger.debug(f"🧠 Getting AI context for technology: {tech_name}")
             context = self.ai_context.get_technology_context(tech_name, meeting_filename)
             
+            # Build dataview queries
+            dataview_people_using = '''```dataview
+table without id
+  file.link as "Person",
+  title-role as "Role",
+  company as "Company"
+from "People"
+where contains(file.outlinks, this.file.link) or contains(file.text, "''' + tech_name + '''")
+```'''
+
+            dataview_companies_using = '''```dataview
+list
+from "Companies"
+where contains(technologies-used, "''' + tech_name + '''") or contains(file.text, "''' + tech_name + '''")
+```'''
+
+            dataview_active_tasks = '''```dataview
+task
+from "Tasks"
+where contains(file.text, "''' + tech_name + '''")
+where !completed
+sort priority desc
+```'''
+
+            dataview_open_issues = '''```dataview
+list
+from "Meetings"
+where contains(technologies-referenced, "[[Technologies/''' + safe_name + '''|''' + tech_name + ''']]")
+where contains(issues-identified, "''' + tech_name + '''")
+sort date desc
+```'''
+
+            dataview_all_meetings = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where contains(technologies-referenced, "[[Technologies/''' + safe_name + '''|''' + tech_name + ''']]")
+sort date desc
+```'''
+
+            dataview_decisions = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  key-decisions-made as "Decisions"
+from "Meetings"
+where contains(technologies-referenced, "[[Technologies/''' + safe_name + '''|''' + tech_name + ''']]")
+where key-decisions-made != null
+sort date desc
+```'''
+
             content = f"""# {tech_name}
 
 Type: Technology
@@ -225,8 +448,20 @@ First Mentioned: {meeting_date}
 **Implementation Date:** 
 **Next Review:** 
 
+## People Using This Technology
+{dataview_people_using}
+
+## Companies Using This Technology
+{dataview_companies_using}
+
+## Active Tasks Related to This Technology
+{dataview_active_tasks}
+
 ## Challenges & Issues
 {context.get('challenges', '')}
+
+### Open Issues
+{dataview_open_issues}
 
 ## Future Plans
 {context.get('future_plans', '')}
@@ -250,8 +485,11 @@ First Mentioned: {meeting_date}
 ## Meeting References
 - [[{meeting_filename}]] - {meeting_date}
 
-## Decision History
+### All Meetings Discussing This Technology
+{dataview_all_meetings}
 
+## Decision History
+{dataview_decisions}
 
 ## Performance Metrics
 
@@ -315,8 +553,8 @@ Last Updated: {meeting_date}
                 if updated:
                     # Update Last Updated timestamp
                     for i, line in enumerate(lines):
-                        if line.startswith('Last Updated:'):
-                            lines[i] = f"Last Updated: {meeting_date}"
+                        if line.startswith('Last Updated:') or line.startswith('**Last Updated:**'):
+                            lines[i] = f"**Last Updated:** {meeting_date}"
                             break
                     
                     updated_content = '\n'.join(lines)
@@ -464,8 +702,8 @@ Last Updated: {meeting_date}
                 current_date = datetime.now().strftime("%Y-%m-%d")
                 
                 for i, line in enumerate(lines):
-                    if line.startswith('Last Updated:'):
-                        lines[i] = f"Last Updated: {current_date}"
+                    if line.startswith('Last Updated:') or line.startswith('**Last Updated:**'):
+                        lines[i] = f"**Last Updated:** {current_date}"
                         break
                 
                 updated_content = '\n'.join(lines)

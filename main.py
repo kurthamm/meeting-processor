@@ -7,11 +7,11 @@ Clean, modular architecture with focused responsibilities
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import List
 from watchdog.observers import Observer
 from entities.detector import EntityDetector
 from entities.manager import ObsidianEntityManager
 from obsidian.formatter import ObsidianFormatter
-from typing import List
 
 from config.settings import Settings
 from core.audio_processor import AudioProcessor
@@ -24,7 +24,7 @@ from obsidian.formatter import ObsidianFormatter
 from monitoring.file_watcher import MeetingFileHandler
 from utils.logger import Logger
 from core.task_extractor import TaskExtractor
-from core.dashboard_generator import DashboardGenerator
+from core.dashboard_orchestrator import DashboardOrchestrator
 
 
 class MeetingProcessor:
@@ -53,7 +53,7 @@ class MeetingProcessor:
         )
         self.obsidian_formatter = ObsidianFormatter(self.claude_analyzer)
         self.task_extractor = TaskExtractor(self.settings.anthropic_client)
-        self.dashboard_generator = DashboardGenerator(self.file_manager, self.settings.anthropic_client)
+        self.dashboard_orchestrator = DashboardOrchestrator(self.file_manager, self.settings.anthropic_client)
         
         self.logger.info(f"Meeting Processor initialized")
         self.logger.info(f"Monitoring: {self.file_manager.input_dir}")
@@ -221,12 +221,13 @@ Successfully detected and converted meeting recording to FLAC format.
                         task_link = f"[[Tasks/{task_filename}|{task['task']}]]"
                         task_links.append(task_link)
                 
-                # Create comprehensive dashboard in /Meta/dashboards
-                self.task_extractor.create_comprehensive_dashboard(
-                    all_tasks, 
-                    obsidian_filename.replace('.md', ''),
-                    self.file_manager
-                )
+                # DISABLED: Using unified Dataview dashboard instead
+                # self.task_extractor.create_comprehensive_dashboard(
+                #     all_tasks, 
+                #     obsidian_filename.replace('.md', ''),
+                #     self.file_manager
+                # )
+                self.logger.info("📊 Skipping meeting-specific dashboard - using unified Dataview dashboard")
                 
                 # Update the obsidian content to include task links
                 if task_links:
@@ -234,72 +235,33 @@ Successfully detected and converted meeting recording to FLAC format.
                         obsidian_content, 
                         task_links
                     )
-    def _update_meeting_note_with_task_links(self, obsidian_content: str, task_links: List[str]) -> str:
-        """
-        Update the meeting note to include links to created task files
-        """
-        try:
-            lines = obsidian_content.split('\n')
-            updated_lines: List[str] = []
-            in_action_items_section = False
-
-            for line in lines:
-                # Look for the Action Items section
-                if line.strip() == "## Action Items":
-                    updated_lines.append(line)
-                    updated_lines.append("<!-- Links to task records -->")
-
-                    # Add all task links
-                    for task_link in task_links:
-                        updated_lines.append(f"- [ ] {task_link}")
-
-                    in_action_items_section = True
-                    continue
-
-                # Skip the placeholder comment and move to next section
-                elif in_action_items_section and line.strip().startswith("<!--"):
-                    continue
-
-                # When we hit the next header, we're done with action items
-                elif in_action_items_section and line.startswith("## "):
-                    in_action_items_section = False
-                    updated_lines.append("")  # add a blank line for spacing
-                    updated_lines.append(line)
-                    continue
-
-                # Skip any existing action-item lines if we're still in that section
-                elif in_action_items_section and (
-                    line.strip().startswith("- [ ]") or line.strip().startswith("- [x]")
-                ):
-                    continue
-
-                # All other lines
-                else:
-                    updated_lines.append(line)
-
-            self.logger.info(f"✅ Updated meeting note with {len(task_links)} task links")
-            return "\n".join(updated_lines)
-
-        except Exception as e:
-            self.logger.error(f"Error updating meeting note with task links: {e}")
-            # If something goes wrong, return the original unmodified content
-            return obsidian_content
-
             
             # Smart dashboard update
-        meeting_data = {
-            'filename': obsidian_filename,
-            'date': meeting_date,
-            'has_transcript': True
-        }
+            meeting_data = {
+                'filename': obsidian_filename,
+                'date': meeting_date,
+                'has_transcript': True
+            }
             
-        self.update_dashboard_intelligently(meeting_data, all_tasks, analysis.get('entities'))
-              
-        # Save to Obsidian vault
-        success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
-        if success and entity_links and any(entity_links.values()):
-            vault_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / obsidian_filename
-            self.entity_manager.update_meeting_note_with_entities(vault_path, entity_links)
+            self.update_dashboard_intelligently(meeting_data, all_tasks, analysis.get('entities'))
+            
+            # Save to Obsidian vault
+            self.logger.info(f"🚀 Attempting to save to vault: {obsidian_filename}")
+            self.logger.info(f"📁 Vault path: {self.file_manager.obsidian_vault_path}")
+            self.logger.info(f"📂 Folder path: {self.file_manager.obsidian_folder_path}")
+            
+            success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
+            
+            self.logger.info(f"💾 Save result: {success}")
+            
+            if success and entity_links and any(entity_links.values()):
+                vault_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / obsidian_filename
+                self.logger.info(f"🔗 Updating entity links at: {vault_path}")
+                self.entity_manager.update_meeting_note_with_entities(vault_path, entity_links)
+            elif not success:
+                self.logger.error(f"❌ Failed to save to vault: {obsidian_filename}")
+            else:
+                self.logger.info(f"⏭️ Skipping entity update - success: {success}, has entity_links: {bool(entity_links and any(entity_links.values()))}")
         
         # Save JSON and markdown formats
         analysis_path = self.file_manager.output_dir / f"{enhanced_filename}_analysis.json"
@@ -307,6 +269,50 @@ Successfully detected and converted meeting recording to FLAC format.
             json.dump(analysis, f, indent=2, ensure_ascii=False)
         
         self.logger.info(f"💾 Analysis saved: {analysis_path.name}")
+    
+    def _update_meeting_note_with_task_links(self, obsidian_content: str, task_links: List[str]) -> str:
+        """Update the meeting note to include links to created task files"""
+        try:
+            lines = obsidian_content.split('\n')
+            updated_lines = []
+            in_action_items_section = False
+            
+            for line in lines:
+                # Look for the Action Items section
+                if line.strip() == "## Action Items":
+                    updated_lines.append(line)
+                    updated_lines.append("<!-- Links to task records -->")
+                    
+                    # Add all task links
+                    for task_link in task_links:
+                        updated_lines.append(f"- [ ] {task_link}")
+                    
+                    in_action_items_section = True
+                    continue
+                
+                # Skip the placeholder comment and move to next section
+                elif in_action_items_section and line.strip().startswith("<!--"):
+                    continue
+                
+                # When we hit the next section, we're done with action items
+                elif in_action_items_section and line.startswith("##"):
+                    in_action_items_section = False
+                    updated_lines.append("")  # Add spacing
+                    updated_lines.append(line)
+                
+                # Skip any existing action item lines in this section
+                elif in_action_items_section and (line.strip().startswith("- [ ]") or line.strip().startswith("- [x]")):
+                    continue
+                    
+                else:
+                    updated_lines.append(line)
+            
+            self.logger.info(f"✅ Updated meeting note with {len(task_links)} task links")
+            return '\n'.join(updated_lines)
+            
+        except Exception as e:
+            self.logger.error(f"Error updating meeting note with task links: {e}")
+            return obsidian_content  # Return original content if update fails
     
     def process_existing_files(self):
         """Process any existing MP4 files on startup"""
@@ -334,7 +340,7 @@ Successfully detected and converted meeting recording to FLAC format.
         # Always update for high-impact meetings
         if self._is_high_impact_meeting(meeting_data, all_tasks, entities):
             self.logger.info("🔥 High-impact meeting detected - updating dashboard")
-            self.dashboard_generator.create_primary_dashboard()
+            self.dashboard_orchestrator.create_primary_dashboard()
             return
         
         # Time-based updates
@@ -343,13 +349,13 @@ Successfully detected and converted meeting recording to FLAC format.
         
         if hours_since >= 6:  # Refresh every 6 hours max
             self.logger.info(f"⏰ {hours_since:.1f} hours since last update - refreshing dashboard")
-            self.dashboard_generator.create_primary_dashboard()
+            self.dashboard_orchestrator.create_primary_dashboard()
             return
         
         # Morning refresh (if not updated since yesterday)
         if datetime.now().hour == 9 and hours_since >= 12:
             self.logger.info("🌅 Morning dashboard refresh")
-            self.dashboard_generator.create_primary_dashboard()
+            self.dashboard_orchestrator.create_primary_dashboard()
             return
             
         # Just log that meeting was processed
@@ -448,6 +454,7 @@ Successfully detected and converted meeting recording to FLAC format.
         except Exception as e:
             self.logger.warning(f"Error getting last dashboard update time: {e}")
             return datetime(2020, 1, 1)  # Force update on error
+
 
 def main():
     """Application entry point"""

@@ -31,14 +31,47 @@ class ObsidianFormatter(LoggerMixin):
         
         # Build structured note content
         note_content = self._build_note_structure(
-            clean_title, meeting_date, analysis_text, formatted_transcript
+            clean_title, meeting_date, analysis_text, formatted_transcript, meeting_topic
         )
         
         log_success(self.logger, f"Created Obsidian note for {meeting_topic}")
         return note_content
     
-    def _build_note_structure(self, title: str, date: str, analysis: str, transcript: str) -> str:
+    def _build_note_structure(self, title: str, date: str, analysis: str, transcript: str, meeting_topic: str) -> str:
         """Build the structured Obsidian note"""
+        # Build dataview queries for the meeting - updated for new task structure
+        dataview_tasks = '''```dataview
+TABLE WITHOUT ID
+  file.link as Task,
+  status as Status,
+  priority as Priority,
+  assigned_to as "Assigned To",
+  due_date as "Due Date"
+FROM "Tasks"
+WHERE meeting_source = this.file.name OR contains(meeting_source, "''' + meeting_topic + '''")
+SORT priority DESC, due_date ASC
+```'''
+
+        dataview_follow_ups = '''```dataview
+list
+from "Meetings"
+where contains(file.text, "''' + meeting_topic + '''") or contains(follow-up-required, this.file.link)
+where file.name != this.file.name
+sort date desc
+```'''
+
+        dataview_related_meetings = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where (contains(project, this.project) or any(file.etags, (t) => contains(this.file.etags, t)))
+where file.name != this.file.name
+sort date desc
+limit 5
+```'''
+
         note_parts = [
             f"# {title}",
             "",
@@ -64,7 +97,10 @@ class ObsidianFormatter(LoggerMixin):
             "<!-- Extracted automatically and manually added -->",
             "",
             "## Action Items",
-            "<!-- Links to task records -->",
+            "<!-- Links to task records will be populated here -->",
+            "",
+            "### All Tasks from This Meeting",
+            dataview_tasks,
             "",
             "## Technical Discussions",
             "Architecture Decisions: ",
@@ -96,12 +132,18 @@ class ObsidianFormatter(LoggerMixin):
             "Research Tasks: ",
             "Client Communication: ",
             "",
+            "### Follow-up Meetings",
+            dataview_follow_ups,
+            "",
             "## Entity Connections",
             "People Mentioned: ",
             "Companies Discussed: ",
             "Technologies Referenced: ",
             "Solutions Applied: ",
             "Related Projects: ",
+            "",
+            "## Related Meetings",
+            dataview_related_meetings,
             "",
             "## Meeting Quality",
             "Effectiveness: High / Medium / Low",

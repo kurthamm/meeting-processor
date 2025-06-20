@@ -1,109 +1,116 @@
 """
-Configuration management for Meeting Processor
-Handles environment variables, API clients, and settings
+Configuration settings for Meeting Processor
 """
 
 import os
 from pathlib import Path
-from typing import Optional
-import anthropic
-
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-
+from anthropic import Anthropic
+from openai import OpenAI
 from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 
 class Settings:
     """Centralized configuration management"""
     
+    # Agile/Scrum Task Standards
+    TASK_STATUSES = ['new', 'ready', 'in_progress', 'in_review', 'done', 'blocked', 'cancelled']
+    TASK_PRIORITIES = ['critical', 'high', 'medium', 'low']
+    TASK_CATEGORIES = ['technical', 'business', 'process', 'documentation', 'research']
+    
+    # Task Status Emoji Mapping
+    STATUS_EMOJIS = {
+        'new': '🆕',
+        'ready': '📋',
+        'in_progress': '🚀',
+        'in_review': '🔍',
+        'done': '✅',
+        'blocked': '🚫',
+        'cancelled': '❌'
+    }
+    
+    # Priority Emoji Mapping
+    PRIORITY_EMOJIS = {
+        'critical': '🚨',
+        'high': '🔥',
+        'medium': '⚡',
+        'low': '📌'
+    }
+    
+    # Category Emoji Mapping
+    CATEGORY_EMOJIS = {
+        'technical': '💻',
+        'business': '💼',
+        'process': '📋',
+        'documentation': '📝',
+        'research': '🔍'
+    }
+    
     def __init__(self):
-        # Load environment variables
-        load_dotenv()
+        # API Keys
+        self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
+        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', '')
         
-        # Initialize API clients
-        self._init_api_clients()
-        
-        # Initialize directory paths
-        self._init_directories()
-        
-        # Initialize processing settings
-        self._init_processing_settings()
-    
-    def _init_api_clients(self):
-        """Initialize API clients with proper error handling"""
-        # Anthropic (required)
-        self.anthropic_key = os.getenv('ANTHROPIC_API_KEY')
-        if not self.anthropic_key:
-            raise ValueError("ANTHROPIC_API_KEY environment variable is required")
-        
-        self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_key)
-        
-        # OpenAI (optional - will create placeholder analysis without it)
-        self.openai_key = os.getenv('OPENAI_API_KEY')
-        self.openai_client = None
-        
-        if not OPENAI_AVAILABLE:
-            print("⚠️  OpenAI module not installed - placeholder analysis only")
-        elif not self.openai_key:
-            print("⚠️  OPENAI_API_KEY not found - placeholder analysis only")
-        else:
-            self.openai_client = openai.OpenAI(api_key=self.openai_key)
-            print("✅ OpenAI client initialized")
-    
-    def _init_directories(self):
-        """Initialize directory paths from environment"""
-        self.input_dir = Path(os.getenv('INPUT_DIR', '/app/input'))
-        self.output_dir = Path(os.getenv('OUTPUT_DIR', '/app/output'))
-        self.processed_dir = Path(os.getenv('PROCESSED_DIR', '/app/processed'))
-        
-        # Obsidian vault configuration
-        self.obsidian_vault_path = os.getenv('OBSIDIAN_VAULT_PATH', '/app/obsidian_vault')
+        # Obsidian Configuration
+        self.obsidian_vault_path = os.getenv('OBSIDIAN_VAULT_PATH', '/obsidian_vault')
         self.obsidian_folder_path = os.getenv('OBSIDIAN_FOLDER_PATH', 'Meetings')
         
-        # Docker configuration
-        self.host_uid = os.getenv('HOST_UID', '1000')
-        self.host_gid = os.getenv('HOST_GID', '1000')
-    
-    def _init_processing_settings(self):
-        """Initialize processing-specific settings"""
-        # Testing mode allows reprocessing files
+        # User Configuration
+        self.obsidian_user_name = os.getenv('OBSIDIAN_USER_NAME', '')
+        self.obsidian_company_name = os.getenv('OBSIDIAN_COMPANY_NAME', '')
+        
+        # Docker paths
+        self.input_dir = os.getenv('INPUT_DIR', '/app/input')
+        self.output_dir = os.getenv('OUTPUT_DIR', '/app/output')
+        self.processed_dir = os.getenv('PROCESSED_DIR', '/app/processed')
+        
+        # Entity folders for Obsidian
+        self.entity_folders = ['People', 'Companies', 'Technologies']
+        
+        # Task configuration
+        self.task_folder = 'Tasks'
+        self.task_dashboard_path = 'Meta/dashboards/Task-Dashboard.md'
+        
+        # Testing mode
         self.testing_mode = os.getenv('TESTING_MODE', 'false').lower() == 'true'
         
-        # Audio processing settings
-        self.chunk_duration_minutes = int(os.getenv('CHUNK_DURATION_MINUTES', '10'))
-        self.max_file_size_mb = int(os.getenv('MAX_FILE_SIZE_MB', '25'))
-        
-        # File monitoring settings
-        self.file_stabilization_delay = int(os.getenv('FILE_STABILIZATION_DELAY', '3'))
-        self.backup_scan_interval = int(os.getenv('BACKUP_SCAN_INTERVAL', '2'))
+        # Initialize API clients
+        self.openai_client = self._init_openai_client()
+        self.anthropic_client = self._init_anthropic_client()
     
-    @property
-    def has_openai(self) -> bool:
-        """Check if OpenAI is available for transcription"""
-        return self.openai_client is not None
+    def _init_openai_client(self):
+        """Initialize OpenAI client if API key is available"""
+        if self.openai_api_key:
+            client = OpenAI(api_key=self.openai_api_key)
+            print("✅ OpenAI client initialized")
+            return client
+        else:
+            print("⚠️  No OpenAI API key found - transcription will not be available")
+            return None
     
-    @property
-    def entity_folders(self) -> list:
-        """Get list of entity folders to create"""
-        return ['People', 'Companies', 'Technologies']
+    def _init_anthropic_client(self):
+        """Initialize Anthropic client if API key is available"""
+        if self.anthropic_api_key:
+            client = Anthropic(api_key=self.anthropic_api_key)
+            print("✅ Anthropic client initialized")
+            return client
+        else:
+            print("⚠️  No Anthropic API key found - analysis will not be available")
+            return None
     
-    def get_log_file_path(self) -> Path:
-        """Get path for log file"""
-        return Path('meeting_processor.log')
+    @classmethod
+    def get_status_emoji(cls, status: str) -> str:
+        """Get emoji for a task status"""
+        return cls.STATUS_EMOJIS.get(status.lower(), '📋')
     
-    def __str__(self) -> str:
-        """String representation for debugging"""
-        return f"""Settings:
-  Input Dir: {self.input_dir}
-  Output Dir: {self.output_dir}
-  Processed Dir: {self.processed_dir}
-  Obsidian Vault: {self.obsidian_vault_path}
-  Obsidian Folder: {self.obsidian_folder_path}
-  Testing Mode: {self.testing_mode}
-  OpenAI Available: {self.has_openai}
-  Chunk Duration: {self.chunk_duration_minutes}min
-  Max File Size: {self.max_file_size_mb}MB"""
+    @classmethod
+    def get_priority_emoji(cls, priority: str) -> str:
+        """Get emoji for a task priority"""
+        return cls.PRIORITY_EMOJIS.get(priority.lower(), '📋')
+    
+    @classmethod
+    def get_category_emoji(cls, category: str) -> str:
+        """Get emoji for a task category"""
+        return cls.CATEGORY_EMOJIS.get(category.lower(), '📝')
