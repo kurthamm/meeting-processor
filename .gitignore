@@ -33,7 +33,7 @@ logs/
 output/
 processed/
 
-# --- Ignore your ‘old files’ folder if you use one locally ---
+# --- Ignore your 'old files' folder if you use one locally ---
 old files/
 
 # --- Ignore that PowerShell rebuild script if you keep it local-only ---
@@ -42,3 +42,22 @@ rebuild.ps1
 # --- Ignore OS junk ---
 .DS_Store
 Thumbs.db
+
+# --- Obsidian Vault Symlinks ---
+# Ignore all vault content by default
+obsidian-vault-*/*
+
+# But explicitly include Meta (templates & dashboards)
+!obsidian-vault-meta/
+!obsidian-vault-meta/**
+
+# Include plugin configurations only
+!obsidian-vault-plugins/
+!obsidian-vault-plugins/dataview/data.json
+!obsidian-vault-plugins/dataview/*.css
+!obsidian-vault-plugins/templater-obsidian/data.json
+
+# Still ignore plugin binaries
+obsidian-vault-plugins/*/main.js
+obsidian-vault-plugins/*/manifest.json
+obsidian-vault-plugins/*/styles.css
