@@ -4,6 +4,7 @@ Updated to use async vault analysis for better performance
 """
 
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -71,6 +72,48 @@ class DashboardOrchestrator(LoggerMixin):
         except Exception as e:
             log_error(self.logger, "Error creating primary dashboard", e)
             return ""
+    
+    def maybe_refresh(self, meeting_data: Dict[str, Any], tasks: List[Dict], entities: Dict[str, List[str]]) -> bool:
+        """
+        Conditionally refresh dashboards based on meeting importance and thresholds
+        """
+        try:
+            # Check if dashboard update is needed based on thresholds
+            thresholds = self.file_manager.settings.dashboard_update_thresholds
+            
+            # Count high-impact indicators
+            high_priority_tasks = len([t for t in tasks if t.get('priority') in ['critical', 'high']])
+            new_companies = len(entities.get('companies', []))
+            new_people = len(entities.get('people', []))
+            total_tasks = len(tasks)
+            
+            # Check for high-impact keywords in meeting
+            meeting_text = meeting_data.get('filename', '').lower()
+            has_high_impact_keyword = any(
+                keyword in meeting_text 
+                for keyword in thresholds.get('high_impact_keywords', [])
+            )
+            
+            # Determine if update is needed
+            should_update = (
+                high_priority_tasks >= thresholds.get('high_priority_tasks', 2) or
+                new_companies >= thresholds.get('new_companies', 2) or
+                new_people >= thresholds.get('new_people', 3) or
+                total_tasks >= thresholds.get('total_tasks', 5) or
+                has_high_impact_keyword
+            )
+            
+            if should_update:
+                self.logger.info("🔄 High-impact meeting detected - updating dashboards")
+                self.create_primary_dashboard()
+                return True
+            else:
+                self.logger.debug("📊 Dashboard update not needed (below thresholds)")
+                return False
+                
+        except Exception as e:
+            log_error(self.logger, "Error in maybe_refresh", e)
+            return False
     
     async def _gather_vault_intelligence_async(self) -> Dict[str, Any]:
         """Gather intelligence from all areas of the vault using async operations"""

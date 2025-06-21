@@ -39,9 +39,8 @@ class MeetingProcessor:
         # Load and validate settings
         self.settings = Settings()
 
-        # Initialize file management and ensure directories exist
+        # Initialize file management - directories are created in FileManager.__init__
         self.file_manager = FileManager(self.settings)
-        self.file_manager.ensure_directories()
 
         # Core components
         self.audio_processor = AudioProcessor(self.file_manager.output_dir)
@@ -237,12 +236,17 @@ Restart the processor after updating.
             md_content, encoding="utf-8"
         )
 
-        # 3) Entity notes
-        links = []
+        # 3) Entity notes - only create if entities were detected
+        links = {}
         if analysis.get("entities") and self.settings.anthropic_client:
-            links = self.entity_manager.create_entity_notes(
-                analysis["entities"], base, date
-            )
+            # Only create entity notes if we have entities
+            entity_count = sum(len(v) for v in analysis["entities"].values())
+            if entity_count > 0:
+                links = self.entity_manager.create_entity_notes(
+                    analysis["entities"], base, date
+                )
+            else:
+                self.logger.debug("No entities detected - skipping entity note creation")
 
         # 4) Task notes
         tasks = []
@@ -280,12 +284,14 @@ Restart the processor after updating.
             return content
 
         insert = match.end()
-        section = "\n".join(f"- [ ] [[Tasks/{t['id']}|{t['task']}]]" for t in tasks)
+        # Fixed: Using 'task_id' to match task_extractor.py
+        section = "\n".join(f"- [ ] [[Tasks/{t['task_id']}|{t['task']}]]" for t in tasks)
         return content[:insert] + section + "\n\n" + content[insert:]
 
     def _maybe_update_dashboard(
         self, base: str, date: str, tasks: List[Dict], entities: Dict
     ):
+        """Conditionally update dashboards based on meeting importance"""
         data = {"filename": base, "date": date, "has_transcript": True}
         self.dashboard_orchestrator.maybe_refresh(data, tasks, entities)
 
