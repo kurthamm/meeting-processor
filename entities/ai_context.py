@@ -37,18 +37,33 @@ class AIContextExtractor(LoggerMixin):
             
             # Look for company marked as current employer
             for company_file in companies_path.glob("*.md"):
-                with open(company_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    if "**Current Employer:** Yes" in content:
-                        company_name = company_file.stem.replace('-', ' ')
-                        self.logger.info(f"🏢 Found employer context: {company_name}")
-                        return company_name
+                try:
+                    with open(company_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        if "**Current Employer:** Yes" in content:
+                            company_name = company_file.stem.replace('-', ' ')
+                            self.logger.info(f"🏢 Found employer context: {company_name}")
+                            return company_name
+                except Exception as e:
+                    self.logger.debug(f"Error reading company file {company_file}: {e}")
+                    continue
             
             return ""
             
         except Exception as e:
             self.logger.error(f"Error finding employer context: {e}")
             return ""
+    
+    def extract_entity_context(self, entity_name: str, entity_type: str, meeting_filename: str) -> Dict[str, any]:
+        """Extract context for an entity from meeting content"""
+        if entity_type == 'people':
+            return self.get_person_context(entity_name, meeting_filename)
+        elif entity_type == 'companies':
+            return self.get_company_context(entity_name, meeting_filename)
+        elif entity_type == 'technologies':
+            return self.get_technology_context(entity_name, meeting_filename)
+        else:
+            return self._get_default_context(entity_type)
     
     def get_person_context(self, person_name: str, meeting_filename: str) -> Dict[str, str]:
         """Extract AI context about a person"""
@@ -96,6 +111,7 @@ Format as JSON."""
             # Parse response and extract relevant fields
             context = self._parse_context_response(response.content[0].text)
             context['employer'] = self.employer
+            context['summary'] = f"{person_name} is {context.get('role', 'a contact')} at {context.get('company', 'an organization')}."
             
             return context
             
@@ -148,6 +164,12 @@ Format as JSON."""
             
             context = self._parse_context_response(response.content[0].text)
             context['employer'] = self.employer
+            context['relationship_to_employer'] = context.get('relationship', 'Unknown')
+            context['summary'] = f"{company_name} is a {context.get('relationship', 'company')} in the {context.get('industry', 'business')} industry."
+            
+            # Extract technologies as list
+            tech_string = context.get('technologies', '')
+            context['technologies_used'] = [t.strip() for t in tech_string.split(',') if t.strip()] if tech_string else []
             
             return context
             
@@ -198,6 +220,11 @@ Format as JSON."""
             )
             
             context = self._parse_context_response(response.content[0].text)
+            context['summary'] = f"{tech_name} is a {context.get('category', 'technology')} that is {context.get('current_status', 'being used')}."
+            
+            # Extract use cases as list
+            use_cases_string = context.get('use_cases', '')
+            context['use_cases'] = [u.strip() for u in use_cases_string.split(',') if u.strip()] if use_cases_string else []
             
             return context
             
@@ -246,7 +273,8 @@ Format as JSON."""
             'notes': '',
             'email': '',
             'phone': '',
-            'employer': self.employer
+            'employer': self.employer,
+            'summary': 'Person mentioned in meeting.'
         }
     
     def _get_default_company_context(self) -> Dict[str, str]:
@@ -256,24 +284,36 @@ Format as JSON."""
             'size': '',
             'location': '',
             'relationship': '',
+            'relationship_to_employer': 'Unknown',
             'business_needs': '',
             'key_contacts': '',
             'technologies': '',
+            'technologies_used': [],
             'projects': '',
             'notes': '',
-            'employer': self.employer
+            'employer': self.employer,
+            'summary': 'Company discussed in meeting.'
         }
     
     def _get_default_technology_context(self) -> Dict[str, str]:
         """Default context for a technology"""
         return {
-            'category': '',
-            'status': '',
+            'category': 'tool',
+            'current_status': 'in use',
             'usage': '',
-            'use_cases': '',
+            'use_cases': [],
             'integrations': '',
             'business_value': '',
             'challenges': '',
             'future_plans': '',
-            'owner': ''
+            'owner': '',
+            'summary': 'Technology referenced in meeting.'
+        }
+    
+    def _get_default_context(self, entity_type: str) -> Dict[str, str]:
+        """Default context for unknown entity types"""
+        return {
+            'type': entity_type,
+            'summary': f'{entity_type.title()} entity mentioned in meeting.',
+            'notes': ''
         }
