@@ -4,16 +4,14 @@ Meeting Processor - Main Entry Point
 Clean, modular architecture with focused responsibilities
 """
 
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import List
 from watchdog.observers import Observer
-from entities.detector import EntityDetector
-from entities.manager import ObsidianEntityManager
-from obsidian.formatter import ObsidianFormatter
 
-from config.settings import Settings
+from config.settings import Settings, ConfigurationError
 from core.audio_processor import AudioProcessor
 from core.transcription import TranscriptionService
 from core.claude_analyzer import ClaudeAnalyzer
@@ -32,7 +30,17 @@ class MeetingProcessor:
     
     def __init__(self):
         self.logger = Logger.setup()
-        self.settings = Settings()
+        
+        try:
+            # Initialize settings with validation
+            self.settings = Settings()
+        except ConfigurationError as e:
+            self.logger.error(f"Configuration Error: {str(e)}")
+            print("\n❌ Configuration error detected. Please fix the issues above and restart.")
+            sys.exit(1)
+        except Exception as e:
+            self.logger.error(f"Unexpected error during initialization: {str(e)}")
+            sys.exit(1)
         
         # Initialize file management
         self.file_manager = FileManager(self.settings)
@@ -55,7 +63,7 @@ class MeetingProcessor:
         self.task_extractor = TaskExtractor(self.settings.anthropic_client)
         self.dashboard_orchestrator = DashboardOrchestrator(self.file_manager, self.settings.anthropic_client)
         
-        self.logger.info(f"Meeting Processor initialized")
+        self.logger.info(f"Meeting Processor initialized successfully")
         self.logger.info(f"Monitoring: {self.file_manager.input_dir}")
         self.logger.info(f"Output: {self.file_manager.output_dir}")
         self.logger.info(f"Obsidian: {self.file_manager.obsidian_vault_path}")
@@ -64,6 +72,11 @@ class MeetingProcessor:
         """Complete processing pipeline for a meeting file"""
         try:
             self.logger.info(f"🎬 Starting processing: {mp4_path.name}")
+            
+            # Check if we have the necessary API clients
+            if not self.settings.openai_client and not self.settings.testing_mode:
+                self.logger.warning(f"⚠️  Skipping {mp4_path.name} - OpenAI client not available")
+                return
             
             # Step 1: Convert audio
             flac_path = self.audio_processor.convert_mp4_to_flac(mp4_path)
@@ -86,6 +99,8 @@ class MeetingProcessor:
             
         except Exception as e:
             self.logger.error(f"❌ Processing pipeline error: {str(e)}")
+            # Don't crash the whole application for one file
+            self.logger.error(f"Skipping file {mp4_path.name} due to error")
     
     def _process_with_transcription(self, flac_path: Path):
         """Process FLAC file with full pipeline"""
@@ -101,15 +116,25 @@ class MeetingProcessor:
             if not transcript:
                 return self._create_placeholder_analysis(flac_path)
             
-            # Analyze with Claude
-            result = self.claude_analyzer.analyze_transcript(transcript, flac_path.name)
-            if not result:
-                return self._create_placeholder_analysis(flac_path)
-            
-            # Detect entities
-            self.logger.info("🔍 Detecting entities...")
-            entities = self.entity_detector.detect_all_entities(transcript, flac_path.name)
-            result['entities'] = entities
+            # Analyze with Claude if available
+            if self.settings.anthropic_client:
+                result = self.claude_analyzer.analyze_transcript(transcript, flac_path.name)
+                if not result:
+                    return self._create_placeholder_analysis(flac_path)
+                
+                # Detect entities
+                self.logger.info("🔍 Detecting entities...")
+                entities = self.entity_detector.detect_all_entities(transcript, flac_path.name)
+                result['entities'] = entities
+            else:
+                # Create basic result without Claude analysis
+                result = {
+                    "timestamp": datetime.now().isoformat(),
+                    "source_file": flac_path.name,
+                    "transcript": transcript,
+                    "analysis": "Analysis not available - Anthropic API key required",
+                    "entities": {'people': [], 'companies': [], 'technologies': []}
+                }
             
             return result
             
@@ -136,13 +161,14 @@ class MeetingProcessor:
 Successfully detected and converted meeting recording to FLAC format.
 
 **Note:** Full transcription requires OpenAI API key configuration.
+**Note:** Analysis requires Anthropic API key configuration.
 
 ## Current Status
 
 - ✅ MP4 detected and processed
 - ✅ Audio converted to FLAC format
 - ⏳ Transcription requires OpenAI API key
-- ⏳ Analysis requires transcript
+- ⏳ Analysis requires Anthropic API key
 
 ## File Location
 
@@ -167,7 +193,8 @@ Successfully detected and converted meeting recording to FLAC format.
         # Extract meeting topic for filename
         meeting_topic = "Meeting-Recording"
         if ('transcript' in analysis and 
-            not analysis['transcript'].startswith('Transcription not available')):
+            not analysis['transcript'].startswith('Transcription not available') and
+            self.settings.anthropic_client):
             meeting_topic = self.claude_analyzer.extract_meeting_topic(analysis['transcript'])
         
         # Create enhanced filename
@@ -192,9 +219,9 @@ Successfully detected and converted meeting recording to FLAC format.
             with open(obsidian_path, 'w', encoding='utf-8') as f:
                 f.write(obsidian_content)
             
-            # Create entity notes if entities detected
+            # Create entity notes if entities detected and Anthropic is available
             entity_links = {'people': [], 'companies': [], 'technologies': []}
-            if 'entities' in analysis and analysis['entities']:
+            if 'entities' in analysis and analysis['entities'] and self.settings.anthropic_client:
                 self.logger.info("🔗 Creating entity notes with AI context...")
                 entity_links = self.entity_manager.create_entity_notes(
                     analysis['entities'], 
@@ -202,39 +229,34 @@ Successfully detected and converted meeting recording to FLAC format.
                     meeting_date
                 )
             
-            # Extract all tasks for project visibility
-            self.logger.info("📋 Extracting tasks from meeting...")
-            all_tasks = self.task_extractor.extract_all_tasks(
-                analysis['transcript'], 
-                obsidian_filename.replace('.md', ''),
-                meeting_date
-            )
+            # Extract all tasks for project visibility (if Anthropic available)
+            task_links = []
+            if self.settings.anthropic_client:
+                self.logger.info("📋 Extracting tasks from meeting...")
+                all_tasks = self.task_extractor.extract_all_tasks(
+                    analysis['transcript'], 
+                    obsidian_filename.replace('.md', ''),
+                    meeting_date
+                )
 
-            task_links = []  # Store links to created task files
-            if all_tasks:
-                # Create individual task notes in /Tasks folder
-                for task in all_tasks:
-                    task_file_path = self.task_extractor.create_task_note(task, self.file_manager)
-                    if task_file_path:
-                        # Extract just the filename for linking
-                        task_filename = Path(task_file_path).stem
-                        task_link = f"[[Tasks/{task_filename}|{task['task']}]]"
-                        task_links.append(task_link)
-                
-                # DISABLED: Using unified Dataview dashboard instead
-                # self.task_extractor.create_comprehensive_dashboard(
-                #     all_tasks, 
-                #     obsidian_filename.replace('.md', ''),
-                #     self.file_manager
-                # )
-                self.logger.info("📊 Skipping meeting-specific dashboard - using unified Dataview dashboard")
-                
-                # Update the obsidian content to include task links
-                if task_links:
-                    obsidian_content = self._update_meeting_note_with_task_links(
-                        obsidian_content, 
-                        task_links
-                    )
+                if all_tasks:
+                    # Create individual task notes in /Tasks folder
+                    for task in all_tasks:
+                        task_file_path = self.task_extractor.create_task_note(task, self.file_manager)
+                        if task_file_path:
+                            # Extract just the filename for linking
+                            task_filename = Path(task_file_path).stem
+                            task_link = f"[[Tasks/{task_filename}|{task['task']}]]"
+                            task_links.append(task_link)
+                    
+                    self.logger.info("📊 Skipping meeting-specific dashboard - using unified Dataview dashboard")
+                    
+                    # Update the obsidian content to include task links
+                    if task_links:
+                        obsidian_content = self._update_meeting_note_with_task_links(
+                            obsidian_content, 
+                            task_links
+                        )
             
             # Smart dashboard update
             meeting_data = {
@@ -243,7 +265,7 @@ Successfully detected and converted meeting recording to FLAC format.
                 'has_transcript': True
             }
             
-            self.update_dashboard_intelligently(meeting_data, all_tasks, analysis.get('entities'))
+            self.update_dashboard_intelligently(meeting_data, all_tasks if self.settings.anthropic_client else None, analysis.get('entities'))
             
             # Save to Obsidian vault
             self.logger.info(f"🚀 Attempting to save to vault: {obsidian_filename}")
@@ -347,7 +369,9 @@ Successfully detected and converted meeting recording to FLAC format.
         last_update = self._get_last_dashboard_update()
         hours_since = (datetime.now() - last_update).total_seconds() / 3600
         
-        if hours_since >= 6:  # Refresh every 6 hours max
+        # Use configurable threshold
+        update_threshold = self.settings.get_dashboard_threshold('hours_between_updates')
+        if hours_since >= update_threshold:
             self.logger.info(f"⏰ {hours_since:.1f} hours since last update - refreshing dashboard")
             self.dashboard_orchestrator.create_primary_dashboard()
             return
@@ -364,28 +388,31 @@ Successfully detected and converted meeting recording to FLAC format.
     def _is_high_impact_meeting(self, meeting_data, all_tasks=None, entities=None) -> bool:
         """Determine if meeting warrants immediate dashboard update"""
         try:
+            # Use configurable thresholds
+            thresholds = self.settings.dashboard_update_thresholds
+            
             # High priority tasks created
             if all_tasks:
                 high_priority_tasks = [t for t in all_tasks if t.get('priority', '').lower() == 'high']
                 urgent_tasks = [t for t in all_tasks if self._is_urgent_task_data(t)]
                 
-                if len(high_priority_tasks) >= 2:
+                if len(high_priority_tasks) >= thresholds['high_priority_tasks']:
                     self.logger.info(f"🔥 High-impact: {len(high_priority_tasks)} high-priority tasks created")
                     return True
                 
-                if len(urgent_tasks) >= 1:
+                if len(urgent_tasks) >= thresholds['urgent_tasks']:
                     self.logger.info(f"🚨 High-impact: {len(urgent_tasks)} urgent tasks created")
                     return True
             
             # Important new contacts (companies marked as clients)
             if entities:
                 new_companies = entities.get('companies', [])
-                if len(new_companies) >= 2:
+                if len(new_companies) >= thresholds['new_companies']:
                     self.logger.info(f"🏢 High-impact: {len(new_companies)} new companies detected")
                     return True
                 
                 new_people = entities.get('people', [])
-                if len(new_people) >= 3:
+                if len(new_people) >= thresholds['new_people']:
                     self.logger.info(f"👥 High-impact: {len(new_people)} new people detected")
                     return True
             
@@ -402,7 +429,7 @@ Successfully detected and converted meeting recording to FLAC format.
                     return True
             
             # Large number of total tasks
-            if all_tasks and len(all_tasks) >= 5:
+            if all_tasks and len(all_tasks) >= thresholds['total_tasks']:
                 self.logger.info(f"📋 High-impact: {len(all_tasks)} tasks created")
                 return True
             
@@ -462,8 +489,12 @@ def main():
         logger = Logger.setup()
         logger.info("🚀 Starting Meeting Processor...")
         
-        # Initialize processor
-        processor = MeetingProcessor()
+        # Initialize processor (validation happens inside)
+        try:
+            processor = MeetingProcessor()
+        except SystemExit:
+            # Configuration error already logged
+            return
         
         # Process existing files
         processor.process_existing_files()
