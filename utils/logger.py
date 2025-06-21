@@ -54,6 +54,8 @@ class Logger:
     @staticmethod
     def get_logger(name: str) -> logging.Logger:
         """Get a logger for a specific module"""
+        if not Logger._initialized:
+            Logger.setup()
         return logging.getLogger(name)
 
 
@@ -80,7 +82,7 @@ def log_success(logger: logging.Logger, message: str):
 def log_error(logger: logging.Logger, message: str, exception: Exception = None):
     """Log an error message with emoji"""
     if exception:
-        logger.error(f"❌ {message}: {str(exception)}")
+        logger.error(f"❌ {message}: {str(exception)}", exc_info=True)
     else:
         logger.error(f"❌ {message}")
 
