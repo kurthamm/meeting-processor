@@ -38,14 +38,10 @@ class ObsidianFormatter(LoggerMixin):
         return note_content
     
     def _build_note_structure(self, title: str, date: str, analysis: str, transcript: str, meeting_topic: str) -> str:
-        """Build the structured Obsidian note - simplified version"""
+        """Build the structured Obsidian note"""
         
-        # Extract key information from analysis
-        attendees = self._extract_attendees_from_analysis(analysis)
-        decisions = self._extract_decisions_from_analysis(analysis)
-        
-        # Build dataview query for tasks
-        dataview_tasks = '''```dataview
+        # Build dataview queries using f-strings to avoid quote conflicts
+        dataview_tasks = f"""```dataview
 TABLE WITHOUT ID
   file.link as Task,
   status as Status,
@@ -53,103 +49,125 @@ TABLE WITHOUT ID
   assigned_to as "Assigned To",
   due_date as "Due Date"
 FROM "Tasks"
-WHERE meeting_source = this.file.name OR contains(meeting_source, "''' + meeting_topic + '''")
-SORT 
-  choice(priority = "critical", 1, priority = "high", 2, priority = "medium", 3, priority = "low", 4) ASC,
-  due_date ASC
-```'''
+WHERE meeting_source = this.file.name OR contains(meeting_source, "{meeting_topic}")
+SORT priority DESC, due_date ASC
+```"""
 
-        dataview_related_meetings = '''```dataview
-TABLE WITHOUT ID
+        dataview_follow_ups = f"""```dataview
+list
+from "Meetings"
+where contains(file.text, "{meeting_topic}") or contains(follow-up-required, this.file.link)
+where file.name != this.file.name
+sort date desc
+```"""
+
+        dataview_related_meetings = """```dataview
+table without id
   file.link as "Meeting",
   date as "Date",
-  type as "Type"
-FROM "Meetings"
-WHERE project = this.project AND file.name != this.file.name
-SORT date DESC
-LIMIT 5
-```'''
+  meeting-type as "Type"
+from "Meetings"
+where (contains(project, this.project) or any(file.etags, (t) => contains(this.file.etags, t)))
+where file.name != this.file.name
+sort date desc
+limit 5
+```"""
 
         note_parts = [
             f"# {title}",
             "",
-            f"Date: {date}",
             "Type: Meeting",
-            "Duration: ",
+            f"Date: {date}",
             "Project: ",
+            "Meeting Type: Technical Review / Sales Call / Planning / Standup / Demo / Crisis",
+            "Duration: ",
+            "Status: Processed",
             "",
             "## Attendees",
-            attendees if attendees else "To be added",
+            "Internal Team: ",
+            "Client/External: ",
+            "Key Decision Makers: ",
+            "",
+            "## Meeting Context",
+            "Purpose: ",
+            "Agenda Items: ",
+            "Background: ",
+            "Expected Outcomes: ",
+            "",
+            "## Key Decisions Made",
+            "<!-- Extracted automatically and manually added -->",
             "",
             "## Action Items",
-            "<!-- Task links will be automatically populated here -->",
+            "<!-- Links to task records will be populated here -->",
             "",
             "### All Tasks from This Meeting",
             dataview_tasks,
             "",
-            "## Key Decisions",
-            decisions if decisions else "<!-- Key decisions from this meeting -->",
+            "## Technical Discussions",
+            "Architecture Decisions: ",
+            "Technology Choices: ",
+            "Integration Approaches: ",
+            "Performance Considerations: ",
             "",
-            "## Summary",
+            "## Issues Identified",
+            "Blockers: ",
+            "Technical Challenges: ",
+            "Business Risks: ",
+            "Dependencies: ",
             "",
-            analysis,
+            "## Opportunities Discovered",
+            "Upsell Potential: ",
+            "Future Projects: ",
+            "New Requirements: ",
+            "Partnership Options: ",
             "",
-            "## Next Steps",
-            "<!-- Follow-up actions and next meeting plans -->",
+            "## Knowledge Captured",
+            "New Insights: ",
+            "Best Practices: ",
+            "Lessons Learned: ",
+            "Process Improvements: ",
+            "",
+            "## Follow-up Required",
+            "Next Meeting: ",
+            "Documentation Needed: ",
+            "Research Tasks: ",
+            "Client Communication: ",
+            "",
+            "### Follow-up Meetings",
+            dataview_follow_ups,
             "",
             "## Entity Connections",
-            "**People:** ",
-            "**Companies:** ",
-            "**Technologies:** ",
+            "People Mentioned: ",
+            "Companies Discussed: ",
+            "Technologies Referenced: ",
+            "Solutions Applied: ",
+            "Related Projects: ",
             "",
             "## Related Meetings",
             dataview_related_meetings,
             "",
+            "## Meeting Quality",
+            "Effectiveness: High / Medium / Low",
+            "Decision Quality: Good / Fair / Poor",
+            "Action Clarity: Clear / Unclear",
+            "Follow-up Needed: Yes / No",
+            "",
+            "## AI Analysis",
+            "",
+            analysis,
+            "",
             "## Complete Transcript",
             "",
-            formatted_transcript,
+            transcript,
             "",
             "---",
-            f"**Tags:** #meeting #type/meeting",
-            f"**Processed:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            "**Auto-generated:** Yes"
+            "Tags: #meeting #project/active #type/technical-review",
+            "Audio File: ",
+            f"Processed: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "Auto-generated: Yes"
         ]
         
         return "\n".join(note_parts)
-    
-    def _extract_attendees_from_analysis(self, analysis: str) -> str:
-        """Extract attendees from AI analysis"""
-        # Look for participants section
-        participants_match = re.search(r'(?:Participants?|Attendees?)(?:\s*:)?\s*\n(.*?)(?=\n\n|\n##|$)', 
-                                     analysis, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-        if participants_match:
-            attendees = participants_match.group(1).strip()
-            # Clean up the formatting
-            attendees = re.sub(r'^[-\*]\s*', '', attendees, flags=re.MULTILINE)
-            return attendees
-        return ""
-    
-    def _extract_decisions_from_analysis(self, analysis: str) -> str:
-        """Extract key decisions from AI analysis"""
-        # Look for decisions section
-        decisions_match = re.search(r'(?:Major Decisions?|Key Decisions?)(?:\s*:)?\s*\n(.*?)(?=\n\n|\n##|$)', 
-                                  analysis, re.IGNORECASE | re.MULTILINE | re.DOTALL)
-        if decisions_match:
-            decisions = decisions_match.group(1).strip()
-            # Format as bullet points
-            lines = decisions.split('\n')
-            formatted_lines = []
-            for line in lines:
-                line = line.strip()
-                if line and not line.startswith(('- ', '* ', '• ')):
-                    # Check if line starts with number
-                    if re.match(r'^\d+\.?\s', line):
-                        line = re.sub(r'^\d+\.?\s*', '- ', line)
-                    else:
-                        line = f"- {line}"
-                formatted_lines.append(line)
-            return '\n'.join(formatted_lines)
-        return ""
     
     def create_summary_note(self, analysis: str, meeting_topic: str) -> str:
         """Create a shorter summary note for quick reference"""
