@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Optional
 from watchdog.observers import Observer
 
 from config.settings import Settings, ConfigurationError
@@ -64,6 +64,7 @@ class MeetingProcessor:
         self.dashboard_orchestrator = DashboardOrchestrator(self.file_manager, self.settings.anthropic_client)
         
         self.logger.info(f"Meeting Processor initialized successfully")
+        self.logger.info(f"Configuration: {self.settings.get_config_summary()}")
         self.logger.info(f"Monitoring: {self.file_manager.input_dir}")
         self.logger.info(f"Output: {self.file_manager.output_dir}")
         self.logger.info(f"Obsidian: {self.file_manager.obsidian_vault_path}")
@@ -76,6 +77,7 @@ class MeetingProcessor:
             # Check if we have the necessary API clients
             if not self.settings.openai_client and not self.settings.testing_mode:
                 self.logger.warning(f"⚠️  Skipping {mp4_path.name} - OpenAI client not available")
+                self._create_api_key_reminder(mp4_path)
                 return
             
             # Step 1: Convert audio
@@ -102,6 +104,40 @@ class MeetingProcessor:
             # Don't crash the whole application for one file
             self.logger.error(f"Skipping file {mp4_path.name} due to error")
     
+    def _create_api_key_reminder(self, mp4_path: Path):
+        """Create a reminder note about missing API keys"""
+        reminder_content = f"""# API Key Required - {mp4_path.name}
+
+**File Detected:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Original File:** {mp4_path.name}
+
+## ⚠️ Missing API Keys
+
+To process this meeting recording, you need to configure:
+
+1. **OpenAI API Key** - Required for transcription
+   - Get your key at: https://platform.openai.com/api-keys
+   - Set in `.env` file: `OPENAI_API_KEY=sk-...`
+
+2. **Anthropic API Key** - Required for analysis (optional but recommended)
+   - Get your key at: https://console.anthropic.com/
+   - Set in `.env` file: `ANTHROPIC_API_KEY=sk-...`
+
+## File Location
+- **Original MP4:** {mp4_path}
+- **Status:** Awaiting API key configuration
+
+Once you've added the API keys, restart the Meeting Processor to process this file.
+"""
+        
+        reminder_filename = f"API-KEY-REQUIRED_{mp4_path.stem}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        reminder_path = self.file_manager.output_dir / reminder_filename
+        
+        with open(reminder_path, 'w', encoding='utf-8') as f:
+            f.write(reminder_content)
+        
+        self.logger.info(f"📝 Created API key reminder: {reminder_filename}")
+    
     def _process_with_transcription(self, flac_path: Path):
         """Process FLAC file with full pipeline"""
         try:
@@ -114,27 +150,36 @@ class MeetingProcessor:
             # Transcribe audio
             transcript = self.transcription_service.transcribe_audio(flac_path)
             if not transcript:
+                self.logger.warning("⚠️ Transcription failed, creating placeholder")
                 return self._create_placeholder_analysis(flac_path)
             
             # Analyze with Claude if available
             if self.settings.anthropic_client:
                 result = self.claude_analyzer.analyze_transcript(transcript, flac_path.name)
                 if not result:
-                    return self._create_placeholder_analysis(flac_path)
-                
-                # Detect entities
-                self.logger.info("🔍 Detecting entities...")
-                entities = self.entity_detector.detect_all_entities(transcript, flac_path.name)
-                result['entities'] = entities
+                    # Create result with transcript but no analysis
+                    result = {
+                        "timestamp": datetime.now().isoformat(),
+                        "source_file": flac_path.name,
+                        "transcript": transcript,
+                        "analysis": self._create_basic_analysis(transcript),
+                        "entities": {'people': [], 'companies': [], 'technologies': []}
+                    }
+                else:
+                    # Detect entities
+                    self.logger.info("🔍 Detecting entities...")
+                    entities = self.entity_detector.detect_all_entities(transcript, flac_path.name)
+                    result['entities'] = entities
             else:
                 # Create basic result without Claude analysis
                 result = {
                     "timestamp": datetime.now().isoformat(),
                     "source_file": flac_path.name,
                     "transcript": transcript,
-                    "analysis": "Analysis not available - Anthropic API key required",
+                    "analysis": self._create_basic_analysis(transcript),
                     "entities": {'people': [], 'companies': [], 'technologies': []}
                 }
+                self.logger.info("📝 Created basic analysis (no Anthropic key)")
             
             return result
             
@@ -142,10 +187,41 @@ class MeetingProcessor:
             self.logger.error(f"❌ Transcription processing error: {str(e)}")
             return self._create_placeholder_analysis(flac_path)
     
+    def _create_basic_analysis(self, transcript: str) -> str:
+        """Create basic analysis when Claude is not available"""
+        word_count = len(transcript.split())
+        char_count = len(transcript)
+        
+        return f"""# Meeting Analysis
+
+**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Analysis Type:** Basic (Anthropic API key required for full analysis)
+
+## Transcript Statistics
+- **Word Count:** {word_count:,} words
+- **Character Count:** {char_count:,} characters
+- **Estimated Duration:** ~{word_count // 150} minutes
+
+## Transcript Available
+The full transcript has been captured and is available below.
+
+**Note:** To get:
+- Meeting summary
+- Action items extraction
+- Key decisions
+- Speaker identification
+- Entity detection
+
+Please configure your Anthropic API key in the `.env` file.
+
+## Next Steps
+1. Add Anthropic API key for full AI analysis
+2. Review the transcript below
+3. Manually extract any urgent action items
+"""
+    
     def _create_placeholder_analysis(self, flac_path: Path):
         """Create placeholder when transcription unavailable"""
-        from datetime import datetime
-        
         file_size = flac_path.stat().st_size / (1024 * 1024)
         
         analysis = f"""# Meeting Analysis - {flac_path.stem}
@@ -174,6 +250,20 @@ Successfully detected and converted meeting recording to FLAC format.
 
 - **FLAC File:** Available in output directory
 - **Original MP4:** Moved to processed directory
+
+## How to Enable Full Processing
+
+1. **Get API Keys:**
+   - OpenAI: https://platform.openai.com/api-keys
+   - Anthropic: https://console.anthropic.com/
+
+2. **Add to `.env` file:**
+   ```
+   OPENAI_API_KEY=sk-...
+   ANTHROPIC_API_KEY=sk-...
+   ```
+
+3. **Restart Meeting Processor**
 """
 
         return {
@@ -189,6 +279,9 @@ Successfully detected and converted meeting recording to FLAC format.
         """Save analysis results with entity integration"""
         from datetime import datetime
         import json
+        
+        # Initialize variables for conditional processing
+        all_tasks = []
         
         # Extract meeting topic for filename
         meeting_topic = "Meeting-Recording"
@@ -265,25 +358,22 @@ Successfully detected and converted meeting recording to FLAC format.
                 'has_transcript': True
             }
             
-            self.update_dashboard_intelligently(meeting_data, all_tasks if self.settings.anthropic_client else None, analysis.get('entities'))
+            self.update_dashboard_intelligently(meeting_data, all_tasks, analysis.get('entities'))
             
             # Save to Obsidian vault
             self.logger.info(f"🚀 Attempting to save to vault: {obsidian_filename}")
-            self.logger.info(f"📁 Vault path: {self.file_manager.obsidian_vault_path}")
-            self.logger.info(f"📂 Folder path: {self.file_manager.obsidian_folder_path}")
             
             success = self.file_manager.save_to_obsidian_vault(obsidian_filename, obsidian_content)
             
-            self.logger.info(f"💾 Save result: {success}")
-            
-            if success and entity_links and any(entity_links.values()):
-                vault_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / obsidian_filename
-                self.logger.info(f"🔗 Updating entity links at: {vault_path}")
-                self.entity_manager.update_meeting_note_with_entities(vault_path, entity_links)
-            elif not success:
-                self.logger.error(f"❌ Failed to save to vault: {obsidian_filename}")
+            if success:
+                self.logger.info(f"✅ Saved to vault: {obsidian_filename}")
+                
+                if entity_links and any(entity_links.values()):
+                    vault_path = Path(self.file_manager.obsidian_vault_path) / self.file_manager.obsidian_folder_path / obsidian_filename
+                    self.logger.info(f"🔗 Updating entity links at: {vault_path}")
+                    self.entity_manager.update_meeting_note_with_entities(vault_path, entity_links)
             else:
-                self.logger.info(f"⏭️ Skipping entity update - success: {success}, has entity_links: {bool(entity_links and any(entity_links.values()))}")
+                self.logger.error(f"❌ Failed to save to vault: {obsidian_filename}")
         
         # Save JSON and markdown formats
         analysis_path = self.file_manager.output_dir / f"{enhanced_filename}_analysis.json"
@@ -356,8 +446,8 @@ Successfully detected and converted meeting recording to FLAC format.
         else:
             self.logger.info("📭 No existing MP4 files found")
 
-    def update_dashboard_intelligently(self, meeting_data, all_tasks=None, entities=None):
-        """Smart dashboard updating strategy"""
+    def update_dashboard_intelligently(self, meeting_data: Dict, all_tasks: Optional[List] = None, entities: Optional[Dict] = None):
+        """Smart dashboard updating strategy with configurable thresholds"""
         
         # Always update for high-impact meetings
         if self._is_high_impact_meeting(meeting_data, all_tasks, entities):
@@ -370,22 +460,29 @@ Successfully detected and converted meeting recording to FLAC format.
         hours_since = (datetime.now() - last_update).total_seconds() / 3600
         
         # Use configurable threshold
-        update_threshold = self.settings.get_dashboard_threshold('hours_between_updates')
+        update_threshold = self.settings.dashboard_update_thresholds.get('hours_between_updates', 6)
         if hours_since >= update_threshold:
             self.logger.info(f"⏰ {hours_since:.1f} hours since last update - refreshing dashboard")
             self.dashboard_orchestrator.create_primary_dashboard()
             return
         
         # Morning refresh (if not updated since yesterday)
-        if datetime.now().hour == 9 and hours_since >= 12:
+        morning_hour = self.settings.dashboard_update_thresholds.get('morning_refresh_hour', 9)
+        if datetime.now().hour == morning_hour and hours_since >= 12:
             self.logger.info("🌅 Morning dashboard refresh")
+            self.dashboard_orchestrator.create_primary_dashboard()
+            return
+        
+        # Weekly summary on Monday mornings
+        if datetime.now().weekday() == 0 and datetime.now().hour == morning_hour and hours_since >= 48:
+            self.logger.info("📊 Weekly Monday dashboard refresh")
             self.dashboard_orchestrator.create_primary_dashboard()
             return
             
         # Just log that meeting was processed
         self.logger.info(f"📊 Dashboard up-to-date ({hours_since:.1f}h ago), skipping refresh")
     
-    def _is_high_impact_meeting(self, meeting_data, all_tasks=None, entities=None) -> bool:
+    def _is_high_impact_meeting(self, meeting_data: Dict, all_tasks: Optional[List] = None, entities: Optional[Dict] = None) -> bool:
         """Determine if meeting warrants immediate dashboard update"""
         try:
             # Use configurable thresholds
@@ -393,45 +490,51 @@ Successfully detected and converted meeting recording to FLAC format.
             
             # High priority tasks created
             if all_tasks:
-                high_priority_tasks = [t for t in all_tasks if t.get('priority', '').lower() == 'high']
+                high_priority_tasks = [t for t in all_tasks if t.get('priority', '').lower() in ['high', 'critical']]
                 urgent_tasks = [t for t in all_tasks if self._is_urgent_task_data(t)]
+                critical_tasks = [t for t in all_tasks if t.get('priority', '').lower() == 'critical']
                 
-                if len(high_priority_tasks) >= thresholds['high_priority_tasks']:
+                if len(critical_tasks) >= thresholds.get('critical_tasks', 1):
+                    self.logger.info(f"🚨 High-impact: {len(critical_tasks)} critical tasks created")
+                    return True
+                
+                if len(high_priority_tasks) >= thresholds.get('high_priority_tasks', 2):
                     self.logger.info(f"🔥 High-impact: {len(high_priority_tasks)} high-priority tasks created")
                     return True
                 
-                if len(urgent_tasks) >= thresholds['urgent_tasks']:
+                if len(urgent_tasks) >= thresholds.get('urgent_tasks', 1):
                     self.logger.info(f"🚨 High-impact: {len(urgent_tasks)} urgent tasks created")
+                    return True
+                
+                # Large number of total tasks
+                if len(all_tasks) >= thresholds.get('total_tasks', 5):
+                    self.logger.info(f"📋 High-impact: {len(all_tasks)} tasks created")
                     return True
             
             # Important new contacts (companies marked as clients)
             if entities:
                 new_companies = entities.get('companies', [])
-                if len(new_companies) >= thresholds['new_companies']:
+                if len(new_companies) >= thresholds.get('new_companies', 2):
                     self.logger.info(f"🏢 High-impact: {len(new_companies)} new companies detected")
                     return True
                 
                 new_people = entities.get('people', [])
-                if len(new_people) >= thresholds['new_people']:
+                if len(new_people) >= thresholds.get('new_people', 3):
                     self.logger.info(f"👥 High-impact: {len(new_people)} new people detected")
                     return True
             
             # Meeting topic keywords that indicate importance
             meeting_filename = meeting_data.get('filename', '').lower()
-            high_impact_keywords = [
+            high_impact_keywords = thresholds.get('high_impact_keywords', [
                 'client', 'sales', 'contract', 'deal', 'strategy', 'executive', 
-                'board', 'crisis', 'urgent', 'critical', 'launch', 'review'
-            ]
+                'board', 'crisis', 'urgent', 'critical', 'launch', 'review',
+                'kickoff', 'milestone', 'deadline', 'emergency'
+            ])
             
             for keyword in high_impact_keywords:
                 if keyword in meeting_filename:
                     self.logger.info(f"🎯 High-impact: Meeting contains keyword '{keyword}'")
                     return True
-            
-            # Large number of total tasks
-            if all_tasks and len(all_tasks) >= thresholds['total_tasks']:
-                self.logger.info(f"📋 High-impact: {len(all_tasks)} tasks created")
-                return True
             
             return False
             
@@ -449,18 +552,25 @@ Successfully detected and converted meeting recording to FLAC format.
                     from datetime import datetime
                     deadline_date = datetime.strptime(deadline, "%Y-%m-%d")
                     days_until = (deadline_date - datetime.now()).days
-                    if days_until <= 3:  # Due within 3 days
+                    
+                    # Use configurable urgency threshold
+                    urgency_days = self.settings.dashboard_update_thresholds.get('urgent_task_days', 3)
+                    if days_until <= urgency_days:
                         return True
                 except:
                     pass
             
             # Check for urgent keywords in task description
             task_desc = task_data.get('task', '').lower()
-            urgent_keywords = ['urgent', 'asap', 'immediately', 'critical', 'emergency']
+            urgent_keywords = ['urgent', 'asap', 'immediately', 'critical', 'emergency', 'today', 'now']
             
             for keyword in urgent_keywords:
                 if keyword in task_desc:
                     return True
+            
+            # Check if priority is critical
+            if task_data.get('priority', '').lower() == 'critical':
+                return True
             
             return False
             

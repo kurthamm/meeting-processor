@@ -12,6 +12,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+class ConfigurationError(Exception):
+    """Custom exception for configuration errors"""
+    pass
+
+
 class Settings:
     """Centralized configuration management"""
     
@@ -48,18 +53,37 @@ class Settings:
         'research': '🔍'
     }
     
+    # Dashboard Update Thresholds (configurable via environment)
+    DEFAULT_DASHBOARD_THRESHOLDS = {
+        'hours_between_updates': 6,  # Regular update interval
+        'morning_refresh_hour': 9,   # Hour for morning refresh (24-hour format)
+        'high_priority_tasks': 2,    # Threshold for high priority tasks
+        'critical_tasks': 1,         # Threshold for critical tasks
+        'urgent_tasks': 1,           # Threshold for urgent tasks
+        'new_companies': 2,          # Threshold for new companies
+        'new_people': 3,             # Threshold for new people
+        'total_tasks': 5,            # Threshold for total tasks in a meeting
+        'urgent_task_days': 3,       # Days until deadline to consider urgent
+        'high_impact_keywords': [    # Keywords that indicate important meetings
+            'client', 'sales', 'contract', 'deal', 'strategy', 'executive',
+            'board', 'crisis', 'urgent', 'critical', 'launch', 'review',
+            'kickoff', 'milestone', 'deadline', 'emergency', 'investor',
+            'partnership', 'acquisition', 'merger'
+        ]
+    }
+    
     def __init__(self):
         # API Keys
-        self.openai_api_key = os.getenv('OPENAI_API_KEY', '')
-        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', '')
+        self.openai_api_key = os.getenv('OPENAI_API_KEY', '').strip()
+        self.anthropic_api_key = os.getenv('ANTHROPIC_API_KEY', '').strip()
         
         # Obsidian Configuration
         self.obsidian_vault_path = os.getenv('OBSIDIAN_VAULT_PATH', '/obsidian_vault')
         self.obsidian_folder_path = os.getenv('OBSIDIAN_FOLDER_PATH', 'Meetings')
         
         # User Configuration
-        self.obsidian_user_name = os.getenv('OBSIDIAN_USER_NAME', 'Me')
-        self.obsidian_company_name = os.getenv('OBSIDIAN_COMPANY_NAME', 'My Company')
+        self.obsidian_user_name = os.getenv('OBSIDIAN_USER_NAME', 'Me').strip()
+        self.obsidian_company_name = os.getenv('OBSIDIAN_COMPANY_NAME', 'My Company').strip()
         
         # Docker paths
         self.input_dir = os.getenv('INPUT_DIR', '/app/input')
@@ -76,6 +100,9 @@ class Settings:
         # Testing mode
         self.testing_mode = os.getenv('TESTING_MODE', 'false').lower() == 'true'
         
+        # Load dashboard update thresholds from environment or use defaults
+        self.dashboard_update_thresholds = self._load_dashboard_thresholds()
+        
         # Initialize API clients
         self.openai_client = self._init_openai_client()
         self.anthropic_client = self._init_anthropic_client()
@@ -83,13 +110,51 @@ class Settings:
         # Validate configuration
         self._validate_configuration()
     
+    def _load_dashboard_thresholds(self) -> dict:
+        """Load dashboard update thresholds from environment variables"""
+        thresholds = self.DEFAULT_DASHBOARD_THRESHOLDS.copy()
+        
+        # Override with environment variables if present
+        env_mappings = {
+            'DASHBOARD_UPDATE_HOURS': 'hours_between_updates',
+            'DASHBOARD_MORNING_HOUR': 'morning_refresh_hour',
+            'DASHBOARD_HIGH_PRIORITY_THRESHOLD': 'high_priority_tasks',
+            'DASHBOARD_CRITICAL_THRESHOLD': 'critical_tasks',
+            'DASHBOARD_URGENT_THRESHOLD': 'urgent_tasks',
+            'DASHBOARD_NEW_COMPANIES_THRESHOLD': 'new_companies',
+            'DASHBOARD_NEW_PEOPLE_THRESHOLD': 'new_people',
+            'DASHBOARD_TOTAL_TASKS_THRESHOLD': 'total_tasks',
+            'DASHBOARD_URGENT_DAYS': 'urgent_task_days'
+        }
+        
+        for env_key, config_key in env_mappings.items():
+            env_value = os.getenv(env_key)
+            if env_value:
+                try:
+                    thresholds[config_key] = int(env_value)
+                except ValueError:
+                    print(f"⚠️  Invalid value for {env_key}: {env_value} (must be integer)")
+        
+        # Load high impact keywords if provided
+        keywords_env = os.getenv('DASHBOARD_HIGH_IMPACT_KEYWORDS')
+        if keywords_env:
+            thresholds['high_impact_keywords'] = [k.strip() for k in keywords_env.split(',')]
+        
+        return thresholds
+    
     def _init_openai_client(self):
         """Initialize OpenAI client if API key is available"""
         if self.openai_api_key:
             try:
                 client = OpenAI(api_key=self.openai_api_key)
-                print("✅ OpenAI client initialized")
-                return client
+                # Test the API key with a simple request
+                try:
+                    client.models.list()
+                    print("✅ OpenAI client initialized and validated")
+                    return client
+                except Exception as e:
+                    print(f"⚠️  OpenAI API key appears invalid: {e}")
+                    return None
             except Exception as e:
                 print(f"⚠️  Error initializing OpenAI client: {e}")
                 return None
@@ -108,37 +173,73 @@ class Settings:
                 print(f"⚠️  Error initializing Anthropic client: {e}")
                 return None
         else:
-            print("⚠️  No Anthropic API key found - analysis will not be available")
+            print("⚠️  No Anthropic API key found - AI analysis will not be available")
             return None
     
     def _validate_configuration(self):
         """Validate configuration settings"""
+        errors = []
         warnings = []
         
-        # Check paths
+        # Check required paths
+        required_dirs = [
+            ('input_dir', self.input_dir),
+            ('output_dir', self.output_dir),
+            ('processed_dir', self.processed_dir)
+        ]
+        
+        for name, path in required_dirs:
+            if not Path(path).exists():
+                try:
+                    Path(path).mkdir(parents=True, exist_ok=True)
+                    print(f"✅ Created missing directory: {path}")
+                except Exception as e:
+                    errors.append(f"Cannot create {name} at {path}: {e}")
+        
+        # Check Obsidian vault path
         if not Path(self.obsidian_vault_path).exists():
-            warnings.append(f"Obsidian vault path does not exist: {self.obsidian_vault_path}")
+            errors.append(f"Obsidian vault path does not exist: {self.obsidian_vault_path}")
+            errors.append("Please ensure your Obsidian vault is mounted correctly in docker-compose.yml")
         
         # Check API keys
         if not self.openai_api_key and not self.testing_mode:
             warnings.append("OpenAI API key not configured - transcription disabled")
+            warnings.append("Get your key at: https://platform.openai.com/api-keys")
         
         if not self.anthropic_api_key:
             warnings.append("Anthropic API key not configured - AI analysis disabled")
+            warnings.append("Get your key at: https://console.anthropic.com/")
         
         # Check user configuration
-        if not self.obsidian_user_name:
-            warnings.append("OBSIDIAN_USER_NAME not set - using default 'Me'")
+        if self.obsidian_user_name == 'Me':
+            warnings.append("OBSIDIAN_USER_NAME not customized - using default 'Me'")
+            warnings.append("Set OBSIDIAN_USER_NAME in .env for personalized dashboards")
         
-        if not self.obsidian_company_name:
-            warnings.append("OBSIDIAN_COMPANY_NAME not set - using default 'My Company'")
+        if self.obsidian_company_name == 'My Company':
+            warnings.append("OBSIDIAN_COMPANY_NAME not customized - using default 'My Company'")
+            warnings.append("Set OBSIDIAN_COMPANY_NAME in .env for accurate entity relationships")
         
-        # Print warnings
+        # Validate dashboard thresholds
+        for key, value in self.dashboard_update_thresholds.items():
+            if key.endswith('_threshold') or key.endswith('_days') or key.endswith('_hour') or key == 'hours_between_updates':
+                if isinstance(value, int) and value < 0:
+                    warnings.append(f"Dashboard threshold {key} is negative: {value}")
+        
+        # Print errors first (critical)
+        if errors:
+            print("\n❌ Configuration Errors (must fix):")
+            for error in errors:
+                print(f"   - {error}")
+            raise ConfigurationError("Configuration validation failed. Please fix the errors above.")
+        
+        # Print warnings (non-critical)
         if warnings:
             print("\n⚠️  Configuration Warnings:")
             for warning in warnings:
                 print(f"   - {warning}")
             print()
+        else:
+            print("\n✅ Configuration validated successfully")
     
     @classmethod
     def get_status_emoji(cls, status: str) -> str:
@@ -155,6 +256,10 @@ class Settings:
         """Get emoji for a task category"""
         return cls.CATEGORY_EMOJIS.get(category.lower(), '📝')
     
+    def get_dashboard_threshold(self, key: str, default: int = 6) -> int:
+        """Get a specific dashboard threshold value"""
+        return self.dashboard_update_thresholds.get(key, default)
+    
     def get_config_summary(self) -> dict:
         """Get configuration summary for logging"""
         return {
@@ -163,5 +268,19 @@ class Settings:
             'company_name': self.obsidian_company_name,
             'testing_mode': self.testing_mode,
             'openai_configured': bool(self.openai_api_key),
-            'anthropic_configured': bool(self.anthropic_api_key)
+            'anthropic_configured': bool(self.anthropic_api_key),
+            'dashboard_update_hours': self.dashboard_update_thresholds['hours_between_updates'],
+            'morning_refresh_hour': self.dashboard_update_thresholds['morning_refresh_hour']
         }
+    
+    def print_dashboard_settings(self):
+        """Print current dashboard update settings"""
+        print("\n📊 Dashboard Update Settings:")
+        print(f"   - Update interval: {self.dashboard_update_thresholds['hours_between_updates']} hours")
+        print(f"   - Morning refresh: {self.dashboard_update_thresholds['morning_refresh_hour']}:00")
+        print(f"   - High priority threshold: {self.dashboard_update_thresholds['high_priority_tasks']} tasks")
+        print(f"   - Critical threshold: {self.dashboard_update_thresholds['critical_tasks']} tasks")
+        print(f"   - New companies threshold: {self.dashboard_update_thresholds['new_companies']}")
+        print(f"   - Total tasks threshold: {self.dashboard_update_thresholds['total_tasks']}")
+        print(f"   - Urgent task days: {self.dashboard_update_thresholds['urgent_task_days']} days")
+        print(f"   - High impact keywords: {len(self.dashboard_update_thresholds['high_impact_keywords'])} configured")

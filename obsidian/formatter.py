@@ -26,8 +26,13 @@ class ObsidianFormatter(LoggerMixin):
         
         clean_title = meeting_topic.replace('-', ' ')
         
-        self.logger.info("🎭 Identifying speakers in transcript...")
-        formatted_transcript = self.claude_analyzer.identify_speakers(transcript)
+        # Only identify speakers if Claude is available
+        if self.claude_analyzer and self.claude_analyzer.anthropic_client:
+            self.logger.info("🎭 Identifying speakers in transcript...")
+            formatted_transcript = self.claude_analyzer.identify_speakers(transcript)
+        else:
+            self.logger.info("📝 Using raw transcript (no speaker identification without Anthropic)")
+            formatted_transcript = transcript
         
         # Build structured note content
         note_content = self._build_note_structure(
@@ -38,7 +43,7 @@ class ObsidianFormatter(LoggerMixin):
         return note_content
     
     def _build_note_structure(self, title: str, date: str, analysis: str, transcript: str, meeting_topic: str) -> str:
-        """Build the structured Obsidian note"""
+        """Build the structured Obsidian note with consistent formatting"""
         
         # Build dataview queries using f-strings to avoid quote conflicts
         dataview_tasks = f"""```dataview
@@ -101,10 +106,10 @@ limit 5
             "## Meeting Information",
             f"**Type:** Meeting",
             f"**Date:** {date}",
-            "**Project:** ",
-            "**Meeting Type:** Technical Review / Sales Call / Planning / Standup / Demo / Crisis",
-            "**Duration:** ",
-            "**Status:** Processed",
+            f"**Project:** ",
+            f"**Meeting Type:** Technical Review / Sales Call / Planning / Standup / Demo / Crisis",
+            f"**Duration:** ",
+            f"**Status:** Processed",
             "",
             "## Attendees",
             "**Internal Team:** ",
@@ -160,11 +165,11 @@ limit 5
             dataview_follow_ups,
             "",
             "## Entity Connections",
-            "**People Mentioned:** ",
-            "**Companies Discussed:** ",
-            "**Technologies Referenced:** ",
-            "**Solutions Applied:** ",
-            "**Related Projects:** ",
+            "People Mentioned: ",
+            "Companies Discussed: ",
+            "Technologies Referenced: ",
+            "Solutions Applied: ",
+            "Related Projects: ",
             "",
             "## Related Meetings",
             dataview_related_meetings,
@@ -208,7 +213,7 @@ limit 5
             f"# {meeting_topic} - Summary",
             "",
             f"**Date:** {current_date}",
-            "**Type:** Meeting Summary",
+            f"**Type:** Meeting Summary",
             "",
             "## Quick Summary",
             "",
@@ -229,7 +234,8 @@ limit 5
             r'action\s+items?[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
             r'tasks?[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
             r'to\s+do[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
-            r'follow\s+up[:\-](.+?)(?=\n\n|\n[A-Z]|$)'
+            r'follow\s+up[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
+            r'next\s+steps?[:\-](.+?)(?=\n\n|\n[A-Z]|$)'
         ]
         
         for pattern in patterns:
@@ -237,14 +243,14 @@ limit 5
             for match in matches:
                 items_text = match.group(1).strip()
                 # Split by line breaks and clean up
-                items = [item.strip('- ').strip() for item in items_text.split('\n') if item.strip()]
+                items = [item.strip('- •*').strip() for item in items_text.split('\n') if item.strip()]
                 action_items.extend(items)
         
         # Remove duplicates while preserving order
         seen = set()
         unique_items = []
         for item in action_items:
-            if item and item not in seen:
+            if item and item not in seen and len(item) > 5:  # Skip very short items
                 unique_items.append(item)
                 seen.add(item)
         
@@ -258,21 +264,23 @@ limit 5
         patterns = [
             r'decisions?[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
             r'decided[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
-            r'agreed[:\-](.+?)(?=\n\n|\n[A-Z]|$)'
+            r'agreed[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
+            r'concluded[:\-](.+?)(?=\n\n|\n[A-Z]|$)',
+            r'determined[:\-](.+?)(?=\n\n|\n[A-Z]|$)'
         ]
         
         for pattern in patterns:
             matches = re.finditer(pattern, analysis, re.IGNORECASE | re.MULTILINE | re.DOTALL)
             for match in matches:
                 decisions_text = match.group(1).strip()
-                items = [item.strip('- ').strip() for item in decisions_text.split('\n') if item.strip()]
+                items = [item.strip('- •*').strip() for item in decisions_text.split('\n') if item.strip()]
                 decisions.extend(items)
         
         # Remove duplicates
         seen = set()
         unique_decisions = []
         for decision in decisions:
-            if decision and decision not in seen:
+            if decision and decision not in seen and len(decision) > 5:
                 unique_decisions.append(decision)
                 seen.add(decision)
         
@@ -288,6 +296,24 @@ limit 5
             plain = re.sub(r'\*\*(.*?)\*\*', r'\1', plain)  # Remove bold
             plain = re.sub(r'\*(.*?)\*', r'\1', plain)  # Remove italic
             plain = re.sub(r'\[\[(.*?)\]\]', r'\1', plain)  # Remove links
-            return plain
+            plain = re.sub(r'```[\s\S]*?```', '', plain)  # Remove code blocks
+            plain = re.sub(r'---[\s\S]*?---', '', plain)  # Remove frontmatter
+            return plain.strip()
         else:
             return content
+    
+    def validate_note_structure(self, content: str) -> bool:
+        """Validate that the note has proper structure"""
+        required_sections = [
+            "## Meeting Information",
+            "## Action Items",
+            "## Entity Connections",
+            "## Complete Transcript"
+        ]
+        
+        for section in required_sections:
+            if section not in content:
+                self.logger.warning(f"Missing required section: {section}")
+                return False
+        
+        return True

@@ -1,6 +1,6 @@
 """
 Dashboard Builder for Dashboard Generator
-Handles content formatting and dashboard construction
+Handles content formatting and dashboard construction with optimized queries
 """
 
 import os
@@ -13,7 +13,7 @@ class DashboardBuilder(LoggerMixin):
     """Builds formatted dashboard content from intelligence data"""
     
     def build_primary_dashboard(self, intelligence: Dict[str, Any]) -> str:
-        """Build the primary dashboard content"""
+        """Build the primary dashboard content with optimized queries"""
         
         # Get user and company from environment variables
         user_name = os.getenv('OBSIDIAN_USER_NAME', 'me')
@@ -21,68 +21,88 @@ class DashboardBuilder(LoggerMixin):
         company_name = os.getenv('OBSIDIAN_COMPANY_NAME', 'NeuraFlash')
         company_file_name = company_name.replace(' ', '-')
         
-        # Build dataview queries for the dashboard
+        # Build optimized dataview queries with limits and specific fields
         dataview_recent_meetings = '''```dataview
 table without id
   file.link as "Meeting",
   date as "Date",
-  meeting-type as "Type",
+  default(meeting-type, "General") as "Type",
   length(filter(file.outlinks, (x) => contains(string(x), "Tasks/"))) as "Tasks"
 from "Meetings"
+where file.name != this.file.name
 sort date desc
 limit 10
 ```'''
 
         dataview_urgent_tasks = '''```dataview
-task
+table without id
+  link(file.link, truncate(default(title, file.name), 50)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Assigned",
+  default(due_date, "-") as "Due"
 from "Tasks"
-where !completed
-where priority = "high" or contains(deadline, dateformat(date(today), "yyyy-MM-dd"))
-sort priority desc
+where status != "done" AND status != "cancelled"
+where priority = "critical" OR priority = "high" OR (due_date != null AND due_date <= date(today) + dur(3 days))
+where file.name != this.file.name
+sort choice(priority = "critical", 1, choice(priority = "high", 2, 3)) asc, due_date asc
 limit 10
 ```'''
 
         dataview_recent_people = '''```dataview
 table without id
   file.link as "Person",
-  company as "Company",
+  default(company, "-") as "Company",
   length(filter(file.inlinks, (x) => contains(string(x), "Meetings/"))) as "Meetings"
 from "People"
 where file.mtime >= date(today) - dur(7 days)
+where file.name != this.file.name
 sort file.mtime desc
 limit 10
 ```'''
 
-        # Updated to use company name from environment
-        dataview_active_companies = '''```dataview
+        # Optimized company query with relationship fallback
+        dataview_active_companies = f'''```dataview
 table without id
   file.link as "Company",
-  relationship-to-''' + company_file_name.lower() + ''' as "Relationship",
+  default(relationship-to-{company_file_name.lower()}, default(relationship, "prospect")) as "Relationship",
   length(filter(file.inlinks, (x) => contains(string(x), "Meetings/"))) as "Meetings"
 from "Companies"
-where contains(relationship-status, "Client") or contains(relationship-status, "Active")
-sort file.mtime desc
+where contains(string(relationship-status), "Client") 
+   OR contains(string(relationship-status), "Active")
+   OR file.mtime >= date(today) - dur(30 days)
+where file.name != this.file.name
+sort choice(contains(string(relationship-status), "Client"), 1, 2) asc, file.mtime desc
+limit 10
 ```'''
 
         dataview_tech_in_use = '''```dataview
 table without id
   file.link as "Technology",
-  status as "Status",
-  category as "Category"
+  default(status, "Unknown") as "Status",
+  default(category, "General") as "Category"
 from "Technologies"
-where status = "In Use" or status = "Active"
-sort category asc
+where status = "In Use" OR status = "Active" OR status = "Deployed"
+where file.name != this.file.name
+sort category asc, file.name asc
+limit 15
 ```'''
 
-        # Updated to use the user name from environment
-        dataview_my_tasks = '''```dataview
-task
+        # Optimized personal tasks query
+        dataview_my_tasks = f'''```dataview
+table without id
+  link(file.link, truncate(default(title, file.name), 40)) as "Task",
+  default(priority, "medium") as "Pri",
+  default(status, "new") as "Status",
+  default(due_date, "-") as "Due"
 from "Tasks"
-where contains(assigned-to, "[[People/''' + user_file_name + ''']]") or contains(assigned-to, "''' + user_name + '''")
-where !completed
-group by priority
+where (contains(string(assigned_to), "{user_name}") OR contains(string(assigned_to), "[[People/{user_file_name}]]"))
+where status != "done" AND status != "cancelled"
+where file.name != this.file.name
+sort priority desc, due_date asc
+limit 20
 ```'''
 
+        # Build dashboard sections
         content_parts = [
             f"# 🧠 Command Center Dashboard - {company_name}",
             "",
@@ -102,6 +122,8 @@ group by priority
             "## 🚨 Urgent Tasks & Deadlines",
             "",
             dataview_urgent_tasks,
+            "",
+            "_No urgent tasks_ <!-- Fallback text -->",
             ""
         ])
         
@@ -110,6 +132,8 @@ group by priority
             "## 📅 Recent Meetings",
             "",
             dataview_recent_meetings,
+            "",
+            "_No recent meetings_ <!-- Fallback text -->",
             ""
         ])
         
@@ -118,6 +142,8 @@ group by priority
             f"## 📋 My Tasks ({user_name})",
             "",
             dataview_my_tasks,
+            "",
+            "_No personal tasks assigned_ <!-- Fallback text -->",
             ""
         ])
         
@@ -126,6 +152,8 @@ group by priority
             "## 👥 Recent People Activity",
             "",
             dataview_recent_people,
+            "",
+            "_No recent people activity_ <!-- Fallback text -->",
             ""
         ])
         
@@ -134,6 +162,8 @@ group by priority
             "## 🏢 Active Companies",
             "",
             dataview_active_companies,
+            "",
+            "_No active companies_ <!-- Fallback text -->",
             ""
         ])
         
@@ -141,172 +171,4 @@ group by priority
         content_parts.extend([
             "## 💻 Technologies in Use",
             "",
-            dataview_tech_in_use,
-            ""
-        ])
-        
-        # Add insights section
-        content_parts.extend(self._build_insights_section(intelligence))
-        
-        # Add quick actions section
-        content_parts.extend(self._build_quick_actions_section(intelligence))
-        
-        # Add navigation section
-        content_parts.extend(self._build_navigation_section())
-        
-        # Add footer
-        content_parts.extend(self._build_footer())
-        
-        return "\n".join(content_parts)
-    
-    def _build_quick_stats_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the quick stats section with dataview queries"""
-        
-        # Build inline dataview queries for counts
-        stats_content = [
-            "```dataview",
-            "table without id",
-            '  length(filter(file.folder, (x) => x = "Meetings")) as "Total Meetings",',
-            '  length(filter(file.folder, (x) => x = "Tasks")) as "Total Tasks",',
-            '  length(filter(file.folder, (x) => x = "People")) as "People Network",',
-            '  length(filter(file.folder, (x) => x = "Companies")) as "Companies",',
-            '  length(filter(file.folder, (x) => x = "Technologies")) as "Technologies"',
-            "limit 1",
-            "```",
-            ""
-        ]
-        
-        return stats_content
-    
-    def _build_urgent_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the urgent attention section - now handled by dataview"""
-        # This is now handled by the dataview query in the main dashboard
-        return []
-    
-    def _build_recent_activity_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the recent activity section - now handled by dataview"""
-        # This is now handled by the dataview queries in the main dashboard
-        return []
-    
-    def _build_insights_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the AI insights section"""
-        insights = intelligence.get('insights', [])
-        
-        if not insights:
-            return []
-        
-        content = [
-            "## 💡 AI Insights",
-            ""
-        ]
-        
-        for insight in insights[:5]:  # Top 5 insights
-            content.append(f"- {insight}")
-        
-        content.append("")
-        return content
-    
-    def _build_relationships_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the key relationships section - now handled by dataview"""
-        # This is now handled by the people dataview query
-        return []
-    
-    def _build_technology_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the technology focus section - now handled by dataview"""
-        # This is now handled by the technology dataview query
-        return []
-    
-    def _build_quick_actions_section(self, intelligence: Dict[str, Any]) -> List[str]:
-        """Build the quick actions section"""
-        content = [
-            "## ⚡ Quick Actions",
-            ""
-        ]
-        
-        # Add dataview query for overdue tasks
-        overdue_tasks_query = '''```dataview
-list
-from "Tasks"
-where !completed
-where deadline < date(today)
-limit 5
-```'''
-        
-        content.extend([
-            "### ⚠️ Overdue Tasks",
-            "",
-            overdue_tasks_query,
-            "",
-            "### 📝 Actions",
-            "- [ ] Review overdue tasks above",
-            "- [ ] Plan next week's key priorities",
-            "- [ ] Update project statuses",
-            "- [ ] Review and update task assignments",
-            ""
-        ])
-        
-        return content
-    
-    def _build_navigation_section(self) -> List[str]:
-        """Build the navigation section"""
-        return [
-            "## 🔗 Navigation",
-            "",
-            "### 📊 Dashboards",
-            "- [[Meta/dashboards/|📊 All Dashboards]]",
-            "",
-            "### 📁 Main Directories", 
-            "- [[Meetings/|📅 Meeting Notes]]",
-            "- [[Tasks/|📋 Task Management]]",
-            "- [[People/|👥 People Directory]]",
-            "- [[Companies/|🏢 Company Directory]]", 
-            "- [[Technologies/|💻 Technology Stack]]",
-            "",
-            "### 🎯 Quick Access",
-            "- Create new: [[Templates/meeting-template|Meeting]] | [[Templates/task-template|Task]] | [[Templates/person-template|Person]]",
-            "- Search: [[Tasks#Active|Active Tasks]] | [[Meetings#This Week|This Week's Meetings]]",
-            "",
-        ]
-    
-    def _build_footer(self) -> List[str]:
-        """Build the footer section"""
-        return [
-            "---",
-            "*This dashboard uses live Dataview queries that update automatically*",
-            "",
-            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            "**Tags:** #dashboard #command-center #2nd-brain"
-        ]
-    
-    def build_trends_section(self, trends: Dict[str, Any]) -> List[str]:
-        """Build a trends section for dashboards with dataview"""
-        content = [
-            "## 📈 Trends & Patterns",
-            "",
-            "### Meeting Frequency (Last 30 Days)",
-            "",
-            '''```dataview
-table without id
-  dateformat(date, "ccc") as "Day",
-  length(filter(pages("Meetings"), (p) => p.date = date)) as "Meetings"
-from "Meetings"
-where date >= date(today) - dur(30 days)
-group by dateformat(date, "yyyy-MM-dd") as date
-sort date desc
-```''',
-            ""
-        ]
-        
-        return content
-    
-    def build_summary_stats(self, intelligence: Dict[str, Any]) -> Dict[str, Any]:
-        """Build summary statistics for other components"""
-        return {
-            'total_meetings': intelligence.get('meetings', {}).get('total', 0),
-            'total_tasks': intelligence.get('tasks', {}).get('total', 0),
-            'total_people': intelligence.get('people', {}).get('total', 0),
-            'total_companies': intelligence.get('companies', {}).get('total', 0),
-            'urgent_tasks': len(intelligence.get('tasks', {}).get('urgent', [])),
-            'this_week_meetings': intelligence.get('meetings', {}).get('this_week', 0),
-            'recent_interactions': len(intelligence.get('people', {}).get('recent_interactions', []))
-        }
+            dataview_tech_in
