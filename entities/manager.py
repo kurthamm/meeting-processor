@@ -3,6 +3,7 @@ AI-powered entity management for Meeting Processor
 Creates and manages entity notes with intelligent context extraction
 """
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, TYPE_CHECKING
 from utils.logger import LoggerMixin, log_success, log_error, log_warning
@@ -19,29 +20,31 @@ class ObsidianEntityManager(LoggerMixin):
         self.file_manager = file_manager
         self.ai_context = AIContextExtractor(anthropic_client, file_manager)
         
-        # Flexible patterns for finding entity sections
+        # Define flexible patterns for entity sections
         self.entity_section_patterns = {
             'people': [
-                r'people\s*mentioned\s*:?',
-                r'attendees?\s*:?',
-                r'participants?\s*:?',
-                r'people\s*:?',
-                r'who\s*was\s*there\s*:?'
+                r'People Mentioned:\s*',
+                r'\*\*People Mentioned:\*\*\s*',
+                r'People:\s*',
+                r'\*\*People:\*\*\s*',
+                r'## People Mentioned\s*',
+                r'### People Mentioned\s*'
             ],
             'companies': [
-                r'companies?\s*discussed\s*:?',
-                r'organizations?\s*:?',
-                r'clients?\s*:?',
-                r'companies?\s*:?',
-                r'business\s*entities\s*:?'
+                r'Companies Discussed:\s*',
+                r'\*\*Companies Discussed:\*\*\s*',
+                r'Companies:\s*',
+                r'\*\*Companies:\*\*\s*',
+                r'## Companies Discussed\s*',
+                r'### Companies Discussed\s*'
             ],
             'technologies': [
-                r'technolog(?:y|ies)\s*referenced\s*:?',
-                r'tech(?:nolog(?:y|ies))?\s*:?',
-                r'tools?\s*:?',
-                r'systems?\s*:?',
-                r'software\s*:?',
-                r'technolog(?:y|ies)\s*:?'
+                r'Technologies Referenced:\s*',
+                r'\*\*Technologies Referenced:\*\*\s*',
+                r'Technologies:\s*',
+                r'\*\*Technologies:\*\*\s*',
+                r'## Technologies Referenced\s*',
+                r'### Technologies Referenced\s*'
             ]
         }
     
@@ -95,7 +98,47 @@ class ObsidianEntityManager(LoggerMixin):
             if not relationship:
                 relationship = 'contact'
             
-            # Build the person note content
+            # Build the person note content - using triple quotes to avoid escaping issues
+            dataview_assigned_tasks = '''```dataview
+task
+from "Tasks"
+where contains(file.text, "Assigned To: ''' + person_name + '''")
+where !completed
+sort priority desc
+```'''
+
+            dataview_mentioned_tasks = '''```dataview
+list
+from "Tasks"
+where contains(file.text, "''' + person_name + '''") 
+where !contains(file.text, "Assigned To: ''' + person_name + '''")
+sort file.ctime desc
+```'''
+
+            dataview_meetings = '''```dataview
+table without id 
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where contains(people-mentioned, "[[People/''' + safe_name + '''|''' + person_name + ''']]")
+sort date desc
+```'''
+
+            dataview_technologies = '''```dataview
+list
+from "Technologies"
+where contains(file.inlinks, this.file.link) or contains(file.text, "''' + person_name + '''")
+```'''
+
+            dataview_companies = '''```dataview
+table without id
+  file.link as "Company",
+  relationship-to-neuraflash as "Relationship"
+from "Companies"
+where contains(file.text, "''' + person_name + '''")
+```'''
+
             content = f"""# {person_name}
 
 **Type:** Person
@@ -132,10 +175,10 @@ class ObsidianEntityManager(LoggerMixin):
 
 ## Active Tasks & Responsibilities
 ### Assigned Tasks
-`$= dv.table(["Task", "Status", "Priority", "Due Date"], dv.pages('"Tasks"').where(p => p.assigned_to && p.assigned_to.path === dv.current().file.path).map(p => [p.file.link, p.status, p.priority, p.due_date]))`
+{dataview_assigned_tasks}
 
 ### Tasks Mentioned In
-`$= dv.list(dv.pages('"Tasks"').where(p => p.file.content && p.file.content.includes("{person_name}") && (!p.assigned_to || p.assigned_to.path !== dv.current().file.path)).map(p => p.file.link))`
+{dataview_mentioned_tasks}
 
 ## Project Involvement
 **Current Projects:** {context.get('projects', '')}
@@ -147,13 +190,13 @@ class ObsidianEntityManager(LoggerMixin):
 - [[{meeting_filename}]] - {meeting_date}
 
 ### All Meetings Attended
-`$= dv.table(["Meeting", "Date", "Type"], dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path)).sort(p => p.date, 'desc').map(p => [p.file.link, p.date, p.meeting_type]))`
+{dataview_meetings}
 
 ## Technologies Used
-`$= dv.list(dv.pages('"Technologies"').where(p => p.file.inlinks && p.file.inlinks.some(link => link.path === dv.current().file.path)).map(p => p.file.link))`
+{dataview_technologies}
 
 ## Companies Involved With
-`$= dv.table(["Company", "Relationship"], dv.pages('"Companies"').where(p => p.file.content && p.file.content.includes("{person_name}")).map(p => [p.file.link, p.relationship_to_neuraflash || ""]))`
+{dataview_companies}
 
 ## Key Interactions
 **Topics They Care About:** 
@@ -201,11 +244,74 @@ class ObsidianEntityManager(LoggerMixin):
             self.logger.debug(f"🧠 Getting AI context for company: {company_name}")
             context = self.ai_context.get_company_context(company_name, meeting_filename)
             
+            # Build dataview queries
+            dataview_contacts = '''```dataview
+table without id
+  file.link as "Person",
+  title-role as "Role",
+  email as "Email"
+from "People"
+where company = "''' + company_name + '''"
+sort title-role asc
+```'''
+
+            dataview_meetings = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where contains(companies-discussed, "[[Companies/''' + safe_name + '''|''' + company_name + ''']]")
+sort date desc
+```'''
+
+            dataview_projects = '''```dataview
+list
+from "Meetings"
+where contains(companies-discussed, "[[Companies/''' + safe_name + '''|''' + company_name + ''']]")
+where contains(tags, "#project") or contains(file.name, "project")
+sort file.ctime desc
+```'''
+
+            dataview_technologies = '''```dataview
+list
+from "Technologies"
+where contains(file.inlinks, this.file.link) or contains(file.text, "''' + company_name + '''")
+```'''
+
+            dataview_tasks = '''```dataview
+task
+from "Tasks"
+where contains(file.text, "''' + company_name + '''")
+where !completed
+sort priority desc
+```'''
+
+            dataview_decision_makers = '''```dataview
+table without id
+  file.link as "Person",
+  decision-authority as "Authority Level"
+from "People"
+where company = "''' + company_name + '''"
+where decision-authority != null
+```'''
+
+            dataview_communications = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  key-decisions-made as "Key Decisions"
+from "Meetings"
+where contains(companies-discussed, "[[Companies/''' + safe_name + '''|''' + company_name + ''']]")
+sort date desc
+limit 5
+```'''
+
             content = f"""# {company_name}
 
 Type: Company
 Status: Active
-**Current Employer:** {"Yes" if company_name.lower() == context.get('employer', '').lower() else "No"}
+**Current Employer:** No
 First Mentioned: {meeting_date}
 
 ## Company Information
@@ -218,7 +324,7 @@ Website:
 {context.get('key_contacts', '')}
 
 ### All Contacts from This Company
-`$= dv.table(["Person", "Role", "Email"], dv.pages('"People"').where(p => p.company === "{company_name}").sort(p => p.title_role, 'asc').map(p => [p.file.link, p.title_role || "", p.email || ""]))`
+{dataview_contacts}
 
 ## Relationship Context
 **Relationship to {context.get('employer', 'Us')}:** {context.get('relationship', '')}
@@ -228,29 +334,29 @@ Website:
 - [[{meeting_filename}]] - {meeting_date}
 
 ### All Meetings with This Company
-`$= dv.table(["Meeting", "Date", "Type"], dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path)).sort(p => p.date, 'desc').map(p => [p.file.link, p.date, p.meeting_type]))`
+{dataview_meetings}
 
 ## Active Projects
 {context.get('projects', '')}
 
 ### Project Details
-`$= dv.list(dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path) && (p.tags && p.tags.includes("#project"))).sort(p => p.date, 'desc').map(p => p.file.link))`
+{dataview_projects}
 
 ## Technologies Used
 {context.get('technologies', '')}
 
 ### Technology Stack
-`$= dv.list(dv.pages('"Technologies"').where(p => p.file.inlinks && p.file.inlinks.some(link => link.path === dv.current().file.path)).map(p => p.file.link))`
+{dataview_technologies}
 
 ## Active Tasks
-`$= dv.table(["Task", "Status", "Priority", "Due Date"], dv.pages('"Tasks"').where(p => p.file.content && p.file.content.includes("{company_name}") && p.status !== "done").sort(p => p.priority, 'desc').map(p => [p.file.link, p.status, p.priority, p.due_date]))`
+{dataview_tasks}
 
 ## Relationship Status
-- [{"x" if company_name.lower() == context.get('employer', '').lower() else " "}] Current Employer
-- [{"x" if "client" in context.get('relationship', '').lower() else " "}] Client
-- [{"x" if "vendor" in context.get('relationship', '').lower() else " "}] Vendor
-- [{"x" if "partner" in context.get('relationship', '').lower() else " "}] Partner
-- [{"x" if "prospect" in context.get('relationship', '').lower() else " "}] Prospect
+- [ ] Current Employer
+- [ ] Client
+- [ ] Vendor
+- [ ] Partner
+- [ ] Prospect
 
 ## Contract Information
 Contract Start: 
@@ -259,17 +365,17 @@ Contract Value:
 Payment Terms: 
 
 ## Decision Makers
-`$= dv.table(["Person", "Authority Level"], dv.pages('"People"').where(p => p.company === "{company_name}" && p.decision_authority).map(p => [p.file.link, p.decision_authority]))`
+{dataview_decision_makers}
 
 ## Communication History
 ### Recent Communications
-`$= dv.table(["Meeting", "Date", "Key Decisions"], dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path)).sort(p => p.date, 'desc').limit(5).map(p => [p.file.link, p.date, p.key_decisions_made || ""]))`
+{dataview_communications}
 
 ## Notes
 {context.get('notes', '')}
 
 ---
-Tags: #company #business #{context.get('relationship', 'prospect').lower().replace(' ', '-')}
+Tags: #company #business
 Created: {meeting_date}
 Last Updated: {meeting_date}
 """
@@ -293,6 +399,59 @@ Last Updated: {meeting_date}
             self.logger.debug(f"🧠 Getting AI context for technology: {tech_name}")
             context = self.ai_context.get_technology_context(tech_name, meeting_filename)
             
+            # Build dataview queries
+            dataview_people_using = '''```dataview
+table without id
+  file.link as "Person",
+  title-role as "Role",
+  company as "Company"
+from "People"
+where contains(file.outlinks, this.file.link) or contains(file.text, "''' + tech_name + '''")
+```'''
+
+            dataview_companies_using = '''```dataview
+list
+from "Companies"
+where contains(technologies-used, "''' + tech_name + '''") or contains(file.text, "''' + tech_name + '''")
+```'''
+
+            dataview_active_tasks = '''```dataview
+task
+from "Tasks"
+where contains(file.text, "''' + tech_name + '''")
+where !completed
+sort priority desc
+```'''
+
+            dataview_open_issues = '''```dataview
+list
+from "Meetings"
+where contains(technologies-referenced, "[[Technologies/''' + safe_name + '''|''' + tech_name + ''']]")
+where contains(issues-identified, "''' + tech_name + '''")
+sort date desc
+```'''
+
+            dataview_all_meetings = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  meeting-type as "Type"
+from "Meetings"
+where contains(technologies-referenced, "[[Technologies/''' + safe_name + '''|''' + tech_name + ''']]")
+sort date desc
+```'''
+
+            dataview_decisions = '''```dataview
+table without id
+  file.link as "Meeting",
+  date as "Date",
+  key-decisions-made as "Decisions"
+from "Meetings"
+where contains(technologies-referenced, "[[Technologies/''' + safe_name + '''|''' + tech_name + ''']]")
+where key-decisions-made != null
+sort date desc
+```'''
+
             content = f"""# {tech_name}
 
 Type: Technology
@@ -319,19 +478,19 @@ First Mentioned: {meeting_date}
 **Next Review:** 
 
 ## People Using This Technology
-`$= dv.table(["Person", "Role", "Company"], dv.pages('"People"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path) || (p.file.content && p.file.content.includes("{tech_name}"))).map(p => [p.file.link, p.title_role || "", p.company || ""]))`
+{dataview_people_using}
 
 ## Companies Using This Technology
-`$= dv.list(dv.pages('"Companies"').where(p => p.technologies_used && p.technologies_used.includes("{tech_name}") || (p.file.content && p.file.content.includes("{tech_name}"))).map(p => p.file.link))`
+{dataview_companies_using}
 
 ## Active Tasks Related to This Technology
-`$= dv.table(["Task", "Status", "Priority"], dv.pages('"Tasks"').where(p => p.file.content && p.file.content.includes("{tech_name}") && p.status !== "done").sort(p => p.priority, 'desc').map(p => [p.file.link, p.status, p.priority]))`
+{dataview_active_tasks}
 
 ## Challenges & Issues
 {context.get('challenges', '')}
 
 ### Open Issues
-`$= dv.list(dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path) && p.issues_identified && p.issues_identified.includes("{tech_name}")).sort(p => p.date, 'desc').map(p => p.file.link))`
+{dataview_open_issues}
 
 ## Future Plans
 {context.get('future_plans', '')}
@@ -356,16 +515,16 @@ First Mentioned: {meeting_date}
 - [[{meeting_filename}]] - {meeting_date}
 
 ### All Meetings Discussing This Technology
-`$= dv.table(["Meeting", "Date", "Type"], dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path)).sort(p => p.date, 'desc').map(p => [p.file.link, p.date, p.meeting_type]))`
+{dataview_all_meetings}
 
 ## Decision History
-`$= dv.table(["Meeting", "Date", "Decisions"], dv.pages('"Meetings"').where(p => p.file.outlinks && p.file.outlinks.some(link => link.path === dv.current().file.path) && p.key_decisions_made).sort(p => p.date, 'desc').map(p => [p.file.link, p.date, p.key_decisions_made]))`
+{dataview_decisions}
 
 ## Performance Metrics
 
 
 ---
-Tags: #technology #tools #{context.get('category', 'general').lower().replace(' ', '-')}
+Tags: #technology #tools
 Created: {meeting_date}
 Last Updated: {meeting_date}
 """
@@ -437,23 +596,30 @@ Last Updated: {meeting_date}
         except Exception as e:
             log_error(self.logger, f"Error updating entity note {note_path}", e)
     
-    def update_meeting_note_with_entities(self, meeting_path: Path, entity_links: Dict[str, List[str]]):
-        """Update the meeting note to include links to detected entities using flexible patterns"""
+    def update_meeting_note_with_entities(self, meeting_note_path: Path, entity_links: Dict[str, List[str]]):
+        """Update the meeting note to include links to detected entities"""
         try:
-            with open(meeting_path, 'r', encoding='utf-8') as f:
+            with open(meeting_note_path, 'r', encoding='utf-8') as f:
                 content = f.read()
             
-            # More flexible approach - look for various patterns
-            updated_content = self._flexible_entity_update(content, entity_links)
+            # Update people section using flexible patterns
+            if entity_links['people']:
+                people_str = ', '.join(entity_links['people'])
+                content = self._flexible_entity_update(content, 'people', people_str, "None detected")
             
-            # If flexible update didn't work, try to add a new section
-            if updated_content == content:
-                self.logger.info("🔄 No entity sections found, adding new Entity Connections section")
-                updated_content = self._add_entity_section(content, entity_links)
+            # Update companies section using flexible patterns
+            if entity_links['companies']:
+                companies_str = ', '.join(entity_links['companies'])
+                content = self._flexible_entity_update(content, 'companies', companies_str, "None detected")
+            
+            # Update technologies section using flexible patterns
+            if entity_links['technologies']:
+                tech_str = ', '.join(entity_links['technologies'])
+                content = self._flexible_entity_update(content, 'technologies', tech_str, "None detected")
             
             # Write updated content
-            with open(meeting_path, 'w', encoding='utf-8') as f:
-                f.write(updated_content)
+            with open(meeting_note_path, 'w', encoding='utf-8') as f:
+                f.write(content)
             
             total_entities = sum(len(links) for links in entity_links.values())
             log_success(self.logger, f"Updated meeting note with {total_entities} AI-enhanced entity links")
@@ -461,97 +627,74 @@ Last Updated: {meeting_date}
         except Exception as e:
             log_error(self.logger, f"Error updating meeting note with entity links", e)
     
-    def _flexible_entity_update(self, content: str, entity_links: Dict[str, List[str]]) -> str:
-        """Flexibly update entity sections using multiple patterns"""
-        import re
+    def _flexible_entity_update(self, content: str, entity_type: str, entity_str: str, fallback_text: str) -> str:
+        """Flexibly update entity section using multiple patterns"""
+        patterns = self.entity_section_patterns.get(entity_type, [])
         
-        updated_content = content
-        
-        # Try to update each entity type
-        for entity_type, patterns in self.entity_section_patterns.items():
-            if entity_type not in entity_links or not entity_links[entity_type]:
-                continue
-            
-            entity_string = ', '.join(entity_links[entity_type])
-            updated = False
-            
-            # Try each pattern
-            for pattern in patterns:
-                # Look for pattern with various formatting
-                full_pattern = rf'(\*\*)?({pattern})(\*\*)?\s*:?\s*([^\n]*)'
+        for pattern in patterns:
+            # Try to find and replace with each pattern
+            match = re.search(f'({pattern})(.*?)(?=\n|$)', content, re.MULTILINE)
+            if match:
+                # Found a match - update it
+                full_match = match.group(0)
+                section_start = match.group(1)
                 
-                match = re.search(full_pattern, updated_content, re.IGNORECASE | re.MULTILINE)
-                if match:
-                    # Found a matching section
-                    start_pos = match.start()
-                    end_pos = match.end()
-                    
-                    # Reconstruct the line with entities
-                    prefix = match.group(1) or ''
-                    label = match.group(2)
-                    suffix = match.group(3) or ''
-                    
-                    new_line = f"{prefix}{label}{suffix}: {entity_string}"
-                    
-                    # Replace the line
-                    lines = updated_content.split('\n')
-                    for i, line in enumerate(lines):
-                        if match.group(0) in line:
-                            lines[i] = new_line
-                            updated = True
-                            break
-                    
-                    if updated:
-                        updated_content = '\n'.join(lines)
-                        self.logger.debug(f"✅ Updated {entity_type} section using pattern: {pattern}")
-                        break
-            
-            if not updated:
-                self.logger.debug(f"⚠️  Could not find section for {entity_type}")
+                # Replace the entire line with the new content
+                new_line = f"{section_start}{entity_str}"
+                content = content.replace(full_match, new_line)
+                
+                self.logger.debug(f"✅ Updated {entity_type} section using pattern: {pattern}")
+                return content
         
-        return updated_content
+        # If no pattern matched, try to add the section
+        self.logger.warning(f"⚠️ No {entity_type} section found, attempting to add one")
+        return self._add_entity_section(content, entity_type, entity_str)
     
-    def _add_entity_section(self, content: str, entity_links: Dict[str, List[str]]) -> str:
-        """Add a new Entity Connections section if none exists"""
-        # Find where to insert - before AI Analysis or Complete Transcript
-        insert_markers = [
-            "## AI Analysis",
-            "## Complete Transcript",
-            "## Transcript",
-            "---"  # Before the footer
-        ]
+    def _add_entity_section(self, content: str, entity_type: str, entity_str: str) -> str:
+        """Add entity section if it doesn't exist"""
+        # Define the section names
+        section_names = {
+            'people': 'People Mentioned',
+            'companies': 'Companies Discussed',
+            'technologies': 'Technologies Referenced'
+        }
         
-        insert_pos = len(content)
-        for marker in insert_markers:
-            pos = content.find(marker)
-            if pos != -1:
-                insert_pos = pos
-                break
+        section_name = section_names.get(entity_type, f'{entity_type.title()} Mentioned')
         
-        # Build entity section
-        entity_section = "\n## Entity Connections\n"
+        # Look for Entity Connections header
+        entity_connections_pattern = r'## Entity Connections'
+        match = re.search(entity_connections_pattern, content, re.MULTILINE)
         
-        if entity_links.get('people'):
-            entity_section += f"**People Mentioned:** {', '.join(entity_links['people'])}\n"
+        if match:
+            # Found Entity Connections section - add our line after it
+            lines = content.split('\n')
+            for i, line in enumerate(lines):
+                if line.strip() == '## Entity Connections':
+                    # Find where to insert (after any existing entity lines)
+                    insert_pos = i + 1
+                    
+                    # Skip past any existing entity lines
+                    while insert_pos < len(lines) and (
+                        'People Mentioned:' in lines[insert_pos] or
+                        'Companies Discussed:' in lines[insert_pos] or
+                        'Technologies Referenced:' in lines[insert_pos] or
+                        'Solutions Applied:' in lines[insert_pos] or
+                        'Related Projects:' in lines[insert_pos] or
+                        lines[insert_pos].strip() == ''
+                    ):
+                        insert_pos += 1
+                    
+                    # Insert our new line
+                    new_line = f"{section_name}: {entity_str}"
+                    lines.insert(insert_pos, new_line)
+                    
+                    content = '\n'.join(lines)
+                    self.logger.info(f"✅ Added {entity_type} section to Entity Connections")
+                    break
         else:
-            entity_section += "**People Mentioned:** None detected\n"
+            self.logger.warning(f"⚠️ Could not find Entity Connections section for {entity_type}")
         
-        if entity_links.get('companies'):
-            entity_section += f"**Companies Discussed:** {', '.join(entity_links['companies'])}\n"
-        else:
-            entity_section += "**Companies Discussed:** None detected\n"
-        
-        if entity_links.get('technologies'):
-            entity_section += f"**Technologies Referenced:** {', '.join(entity_links['technologies'])}\n"
-        else:
-            entity_section += "**Technologies Referenced:** None detected\n"
-        
-        entity_section += "\n"
-        
-        # Insert the section
-        updated_content = content[:insert_pos] + entity_section + content[insert_pos:]
-        
-        return updated_content
+        return content
     
     def get_entity_statistics(self) -> Dict[str, int]:
         """Get statistics about existing entity notes"""
@@ -575,3 +718,213 @@ Last Updated: {meeting_date}
             stats = {'people': 0, 'companies': 0, 'technologies': 0, 'total': 0}
         
         return stats
+    
+    def find_existing_entity(self, entity_name: str, entity_type: str) -> Optional[Path]:
+        """Find if an entity note already exists"""
+        try:
+            safe_name = entity_name.replace(' ', '-').replace('/', '-')
+            filename = f"{safe_name}.md"
+            
+            folder_map = {
+                'person': 'People',
+                'people': 'People',
+                'company': 'Companies',
+                'companies': 'Companies',
+                'technology': 'Technologies',
+                'technologies': 'Technologies'
+            }
+            
+            folder = folder_map.get(entity_type.lower())
+            if not folder:
+                return None
+            
+            entity_path = Path(self.file_manager.obsidian_vault_path) / folder / filename
+            
+            return entity_path if entity_path.exists() else None
+            
+        except Exception as e:
+            log_error(self.logger, f"Error finding existing entity {entity_name}", e)
+            return None
+    
+    def bulk_update_entity_notes(self, updates: Dict[str, Dict[str, str]]) -> int:
+        """Bulk update multiple entity notes with new information"""
+        updated_count = 0
+        
+        try:
+            for entity_name, update_data in updates.items():
+                entity_type = update_data.get('type', 'unknown')
+                entity_path = self.find_existing_entity(entity_name, entity_type)
+                
+                if entity_path:
+                    success = self._update_entity_note(entity_path, update_data)
+                    if success:
+                        updated_count += 1
+                else:
+                    log_warning(self.logger, f"Entity note not found for bulk update: {entity_name}")
+            
+            log_success(self.logger, f"Bulk updated {updated_count} entity notes")
+            
+        except Exception as e:
+            log_error(self.logger, "Error in bulk update operation", e)
+        
+        return updated_count
+    
+    def _update_entity_note(self, entity_path: Path, update_data: Dict[str, str]) -> bool:
+        """Update an existing entity note with new information"""
+        try:
+            with open(entity_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            lines = content.split('\n')
+            updated = False
+            
+            # Update specific fields based on update_data
+            for field, new_value in update_data.items():
+                if field == 'type':  # Skip metadata
+                    continue
+                
+                for i, line in enumerate(lines):
+                    if line.startswith(f"{field.title()}:") and new_value:
+                        lines[i] = f"{field.title()}: {new_value}"
+                        updated = True
+                        break
+            
+            if updated:
+                # Update timestamp
+                from datetime import datetime
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                
+                for i, line in enumerate(lines):
+                    if line.startswith('Last Updated:') or line.startswith('**Last Updated:**'):
+                        lines[i] = f"**Last Updated:** {current_date}"
+                        break
+                
+                updated_content = '\n'.join(lines)
+                
+                with open(entity_path, 'w', encoding='utf-8') as f:
+                    f.write(updated_content)
+                
+                self.logger.debug(f"📝 Updated entity note: {entity_path.name}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            log_error(self.logger, f"Error updating entity note {entity_path}", e)
+            return False
+    
+    def export_entity_index(self) -> str:
+        """Export an index of all entity notes"""
+        try:
+            index_lines = [
+                "# Entity Index",
+                "",
+                f"Generated: {self._get_current_timestamp()}",
+                ""
+            ]
+            
+            # Export People
+            people_path = Path(self.file_manager.obsidian_vault_path) / "People"
+            if people_path.exists():
+                people_files = sorted(people_path.glob('*.md'))
+                index_lines.extend([
+                    f"## People ({len(people_files)})",
+                    ""
+                ])
+                
+                for person_file in people_files:
+                    person_name = person_file.stem.replace('-', ' ')
+                    index_lines.append(f"- [[People/{person_file.stem}|{person_name}]]")
+                
+                index_lines.append("")
+            
+            # Export Companies
+            companies_path = Path(self.file_manager.obsidian_vault_path) / "Companies"
+            if companies_path.exists():
+                company_files = sorted(companies_path.glob('*.md'))
+                index_lines.extend([
+                    f"## Companies ({len(company_files)})",
+                    ""
+                ])
+                
+                for company_file in company_files:
+                    company_name = company_file.stem.replace('-', ' ')
+                    index_lines.append(f"- [[Companies/{company_file.stem}|{company_name}]]")
+                
+                index_lines.append("")
+            
+            # Export Technologies
+            tech_path = Path(self.file_manager.obsidian_vault_path) / "Technologies"
+            if tech_path.exists():
+                tech_files = sorted(tech_path.glob('*.md'))
+                index_lines.extend([
+                    f"## Technologies ({len(tech_files)})",
+                    ""
+                ])
+                
+                for tech_file in tech_files:
+                    tech_name = tech_file.stem.replace('-', ' ')
+                    index_lines.append(f"- [[Technologies/{tech_file.stem}|{tech_name}]]")
+            
+            index_lines.extend([
+                "",
+                "---",
+                "*Generated by Meeting Processor Entity Manager*"
+            ])
+            
+            return "\n".join(index_lines)
+            
+        except Exception as e:
+            log_error(self.logger, "Error exporting entity index", e)
+            return f"Error generating entity index: {str(e)}"
+    
+    def cleanup_orphaned_entities(self) -> int:
+        """Clean up entity notes that have no meeting references"""
+        cleaned_count = 0
+        
+        try:
+            for folder in ['People', 'Companies', 'Technologies']:
+                folder_path = Path(self.file_manager.obsidian_vault_path) / folder
+                
+                if not folder_path.exists():
+                    continue
+                
+                for entity_file in folder_path.glob('*.md'):
+                    try:
+                        with open(entity_file, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        
+                        # Check if there are any meeting references
+                        if "## Meeting History" in content or "## Meeting References" in content:
+                            lines = content.split('\n')
+                            has_meetings = False
+                            
+                            for line in lines:
+                                if line.strip().startswith('- [[') and ('.md]]' in line or ']]' in line):
+                                    has_meetings = True
+                                    break
+                            
+                            if not has_meetings:
+                                # This entity has no meeting references
+                                self.logger.warning(f"🗑️  Found orphaned entity: {entity_file.name}")
+                                # Uncomment the next line to actually delete orphaned entities
+                                # entity_file.unlink()
+                                # cleaned_count += 1
+                    
+                    except Exception as e:
+                        log_error(self.logger, f"Error checking entity file {entity_file.name}", e)
+            
+            if cleaned_count > 0:
+                log_success(self.logger, f"Cleaned up {cleaned_count} orphaned entity notes")
+            else:
+                self.logger.info("🧹 No orphaned entities found")
+            
+        except Exception as e:
+            log_error(self.logger, "Error in cleanup operation", e)
+        
+        return cleaned_count
+    
+    def _get_current_timestamp(self) -> str:
+        """Get current timestamp for exports"""
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
