@@ -39,12 +39,13 @@ class TaskExtractor(LoggerMixin):
             
             tasks = self._parse_task_response(response.content[0].text.strip())
             
-            # Enrich tasks with metadata
+            # Enrich tasks with metadata and consistent linking
             enriched_tasks = []
             for i, task in enumerate(tasks, 1):
                 enriched_task = {
                     **task,
-                    'meeting_source': meeting_filename,
+                    'meeting_source': f"[[Meetings/{meeting_filename}]]",  # Always use wiki link format
+                    'meeting_filename': meeting_filename,  # Keep raw filename for reference
                     'meeting_date': meeting_date,
                     'extracted_date': datetime.now().strftime("%Y-%m-%d"),
                     'status': 'new',  # All tasks start as 'new' in Agile workflow
@@ -247,17 +248,26 @@ Be comprehensive - capture everything that represents work to be done, even if o
                 'research': '🔍'
             }.get(task['category'], '📝')
             
+            # Format assigned_to as wiki link if it's a person
+            assigned_to_display = task['assigned_to'].title() if task['assigned_to'] != 'unassigned' else '🔓 Unassigned'
+            assigned_to_link = f"[[People/{task['assigned_to'].replace(' ', '-')}|{task['assigned_to']}]]" if task['assigned_to'] != 'unassigned' else ''
+            
             # Build YAML frontmatter
             yaml_frontmatter = f"""---
 status: new
 priority: {task['priority']}
 category: {task['category']}
-assigned_to: {task['assigned_to'] if task['assigned_to'] != 'unassigned' else ''}
+assigned_to: {assigned_to_link if assigned_to_link else ''}
 due_date: {deadline_yaml}
 meeting_source: {task['meeting_source']}
 meeting_date: {task['meeting_date']}
 task_id: {task['task_id']}
 created: {task['extracted_date']}
+tags:
+  - task
+  - status/new
+  - priority/{task['priority']}
+  - category/{task['category']}
 ---"""
 
             content = f"""{yaml_frontmatter}
@@ -268,9 +278,9 @@ created: {task['extracted_date']}
 **Status:** 🆕 New  
 **Priority:** {priority_emoji} {task['priority'].title()}  
 **Category:** {category_emoji} {task['category'].title()}  
-**Assigned To:** {task['assigned_to'].title() if task['assigned_to'] != 'unassigned' else '🔓 Unassigned'}  
+**Assigned To:** {assigned_to_link if assigned_to_link else assigned_to_display}  
 **Due Date:** {deadline_text if deadline_text else '📅 Not specified'}  
-**Source:** [[Meetings/{task['meeting_source']}|📝 Meeting Notes]]  
+**Source:** {task['meeting_source']}  
 **Dashboard:** [[Meta/dashboards/Task-Dashboard|📊 All Tasks Dashboard]]
 
 ## Description
@@ -296,29 +306,26 @@ created: {task['extracted_date']}
 - [ ] Completed
 
 ## Work Log
-<!-- Track time and progress updates here -->
+### {task['extracted_date']} - Created
+- Status: `new`
+- Extracted from meeting transcript
+- {f"Assigned to {assigned_to_link}" if assigned_to_link else "Awaiting assignment"}
 
-### Status Updates
-<!-- Add dated status updates as work progresses -->
+<!-- Add updates here as work progresses -->
 
 ## Notes
 <!-- Additional notes and context -->
 
 ## Related Tasks
-```dataview
-TABLE WITHOUT ID
-  file.link as "Task",
-  status as "Status",
-  priority as "Priority",
-  assigned_to as "Assigned"
-FROM "Tasks"
-WHERE contains(dependencies, this.file.name) OR contains(file.outlinks, this.file.link)
-WHERE file.path != this.file.path
-SORT priority DESC
-```
+<!-- Using inline Dataview to avoid rendering issues -->
+
+**Tasks that depend on this:**
+`$= dv.list(dv.pages('"Tasks"').where(p => p.dependencies && p.dependencies.includes(dv.current().file.name)).map(p => p.file.link))`
+
+**Tasks linked from this note:**
+`$= dv.list(dv.pages('"Tasks"').where(p => p.file.outlinks && Array.from(p.file.outlinks).some(link => link.path === dv.current().file.path)).map(p => p.file.link))`
 
 ---
-**Tags:** #task #{task['category']} #status/new #{f"assigned/{task['assigned_to'].lower().replace(' ', '-')}" if task['assigned_to'] != 'unassigned' else 'unassigned'}  
 **Created:** {task['extracted_date']}  
 **Task ID:** `{task['task_id']}`
 """
