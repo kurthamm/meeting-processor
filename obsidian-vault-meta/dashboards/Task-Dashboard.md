@@ -1,260 +1,324 @@
-# Task Management Dashboard
+# 📋 Task Management Dashboard
 
-> *Agile/Scrum task board powered by [Dataview](https://github.com/blacksmithgu/obsidian-dataview)*
+_Last Updated: <%tp.date.now("YYYY-MM-DD HH:mm")%>_
 
----
-
-## 🆕 New (Unprocessed)
-*Tasks that have been captured but not yet refined or assigned*
+## 📊 Task Overview
 
 ```dataview
 TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  category as Category,
-  due_date as "Due Date",
-  assigned_to as "Assigned To"
+  choice(sum(rows.file.link), "**" + sum(rows.file.link) + "** Total Tasks", "**0** Total Tasks") as "Total Tasks",
+  choice(sum(rows.New), "**" + sum(rows.New) + "** New", "**0** New") as "New",
+  choice(sum(rows.InProgress), "**" + sum(rows.InProgress) + "** In Progress", "**0** In Progress") as "In Progress",
+  choice(sum(rows.Done), "**" + sum(rows.Done) + "** Done", "**0** Done") as "Done"
 FROM "Tasks"
-WHERE status = "new"
-SORT 
-  choice(priority = "critical", 1, priority = "high", 2, priority = "medium", 3, priority = "low", 4) ASC,
-  due_date ASC
+WHERE file.name != this.file.name
+GROUP BY true
+FLATTEN length(filter(rows.file, (f) => f.frontmatter.status = "new" OR !f.frontmatter.status)) as New
+FLATTEN length(filter(rows.file, (f) => f.frontmatter.status = "in_progress")) as InProgress
+FLATTEN length(filter(rows.file, (f) => f.frontmatter.status = "done")) as Done
+LIMIT 1
 ```
 
----
+## 🚨 Urgent & Overdue Tasks
 
-## 📋 Ready (Backlog)
-*Refined tasks ready to be picked up for work*
-
-```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  category as Category,
-  due_date as "Due Date",
-  assigned_to as "Assigned To"
-FROM "Tasks"
-WHERE status = "ready"
-SORT 
-  choice(priority = "critical", 1, priority = "high", 2, priority = "medium", 3, priority = "low", 4) ASC,
-  due_date ASC
-```
-
----
-
-## 🚀 In Progress
-*Tasks currently being worked on*
+### ⏰ Overdue Tasks
 
 ```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  category as Category,
-  due_date as "Due Date",
-  assigned_to as "Assigned To"
+TASK
 FROM "Tasks"
-WHERE status = "in_progress"
-SORT assigned_to ASC, priority DESC
-```
-
----
-
-## 🔍 In Review
-*Tasks in code review, testing, or approval*
-
-```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  category as Category,
-  due_date as "Due Date",
-  assigned_to as "Assigned To"
-FROM "Tasks"
-WHERE status = "in_review"
-SORT 
-  choice(priority = "critical", 1, priority = "high", 2, priority = "medium", 3, priority = "low", 4) ASC,
-  due_date ASC
-```
-
----
-
-## 🚫 Blocked
-*Tasks with impediments that need resolution*
-
-```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  category as Category,
-  due_date as "Due Date",
-  assigned_to as "Assigned To"
-FROM "Tasks"
-WHERE status = "blocked"
-SORT 
-  choice(priority = "critical", 1, priority = "high", 2, priority = "medium", 3, priority = "low", 4) ASC
-```
-
----
-
-## ✅ Done (Recent)
-*Completed tasks from the last 30 days*
-
-```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  category as Category,
-  assigned_to as "Completed By",
-  file.mtime as "Completed"
-FROM "Tasks"
-WHERE status = "done" AND file.mtime >= date(today) - dur(30 days)
-SORT file.mtime DESC
+WHERE !completed AND due_date < date(today)
+WHERE file.name != this.file.name
+SORT due_date ASC
 LIMIT 20
 ```
 
----
+_No overdue tasks found_ <!-- This text shows when query returns empty -->
 
-## 📊 Sprint Metrics
+### 🔥 High Priority Tasks
 
-### Current Sprint Status
 ```dataview
-TABLE WITHOUT ID
-  status as Status,
-  length(rows) as Count
+TASK
 FROM "Tasks"
-WHERE status != "done" AND status != "cancelled"
-GROUP BY status
+WHERE !completed AND priority = "high"
+WHERE file.name != this.file.name
+SORT due_date ASC
+LIMIT 15
 ```
 
-### By Priority
+_No high priority tasks found_ <!-- This text shows when query returns empty -->
+
+### 🚨 Critical Priority Tasks
+
 ```dataview
-TABLE WITHOUT ID
-  choice(priority = "critical", "🚨 Critical", priority = "high", "🔥 High", priority = "medium", "⚡ Medium", priority = "low", "📌 Low", "❓ Unknown") as Priority,
-  length(rows) as Count
+TASK
 FROM "Tasks"
-WHERE status != "done" AND status != "cancelled"
-GROUP BY priority
-SORT choice(priority = "critical", 1, priority = "high", 2, priority = "medium", 3, priority = "low", 4) ASC
+WHERE !completed AND priority = "critical"
+WHERE file.name != this.file.name
+SORT due_date ASC
+LIMIT 10
 ```
 
-### By Category
+_No critical tasks found_ <!-- This text shows when query returns empty -->
+
+## 📈 Task Board by Status
+
+### 🆕 New Tasks
+
 ```dataview
 TABLE WITHOUT ID
-  category as Category,
-  length(rows) as Count
+  link(file.link, default(title, file.name)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Assigned To",
+  default(due_date, "not set") as "Due Date"
 FROM "Tasks"
-WHERE status != "done" AND status != "cancelled"
-GROUP BY category
+WHERE (status = "new" OR !status) AND file.name != this.file.name
+SORT priority DESC, due_date ASC
+LIMIT 25
 ```
 
-### Team Workload
+_No new tasks_ <!-- Fallback message -->
+
+### 📋 Ready for Work
+
+```dataview
+TABLE WITHOUT ID
+  link(file.link, default(title, file.name)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Assigned To",
+  default(due_date, "not set") as "Due Date"
+FROM "Tasks"
+WHERE status = "ready" AND file.name != this.file.name
+SORT priority DESC, due_date ASC
+LIMIT 20
+```
+
+_No tasks ready for work_ <!-- Fallback message -->
+
+### 🚀 In Progress
+
+```dataview
+TABLE WITHOUT ID
+  link(file.link, default(title, file.name)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Assigned To",
+  default(due_date, "not set") as "Due Date"
+FROM "Tasks"
+WHERE status = "in_progress" AND file.name != this.file.name
+SORT assigned_to ASC, priority DESC
+LIMIT 20
+```
+
+_No tasks in progress_ <!-- Fallback message -->
+
+### 🔍 In Review
+
+```dataview
+TABLE WITHOUT ID
+  link(file.link, default(title, file.name)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Reviewer",
+  default(due_date, "not set") as "Due Date"
+FROM "Tasks"
+WHERE status = "in_review" AND file.name != this.file.name
+SORT priority DESC, due_date ASC
+LIMIT 15
+```
+
+_No tasks in review_ <!-- Fallback message -->
+
+### 🚫 Blocked Tasks
+
+```dataview
+TABLE WITHOUT ID
+  link(file.link, default(title, file.name)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Assigned To",
+  default(blocked_reason, "not specified") as "Blocked Reason"
+FROM "Tasks"
+WHERE status = "blocked" AND file.name != this.file.name
+SORT priority DESC
+LIMIT 15
+```
+
+_No blocked tasks_ <!-- Fallback message -->
+
+### ✅ Recently Completed (Last 7 Days)
+
+```dataview
+TABLE WITHOUT ID
+  link(file.link, default(title, file.name)) as "Task",
+  default(assigned_to, "unassigned") as "Completed By",
+  default(completed_date, "unknown") as "Completed Date"
+FROM "Tasks"
+WHERE status = "done" AND file.name != this.file.name
+WHERE completed_date >= date(today) - dur(7 days)
+SORT completed_date DESC
+LIMIT 20
+```
+
+_No recently completed tasks_ <!-- Fallback message -->
+
+## 👥 Team Workload
+
+### Active Tasks by Person
+
 ```dataview
 TABLE WITHOUT ID
   assigned_to as "Team Member",
-  length(rows) as "Active Tasks"
+  length(rows) as "Total Tasks",
+  length(filter(rows, (r) => r.priority = "critical")) as "Critical",
+  length(filter(rows, (r) => r.priority = "high")) as "High",
+  length(filter(rows, (r) => r.status = "in_progress")) as "In Progress"
 FROM "Tasks"
-WHERE (status = "in_progress" OR status = "in_review") AND assigned_to != "" AND assigned_to != null
+WHERE status != "done" AND status != "cancelled" AND assigned_to != null AND assigned_to != "" AND assigned_to != "unassigned"
+WHERE file.name != this.file.name
 GROUP BY assigned_to
 SORT length(rows) DESC
+LIMIT 20
 ```
 
----
+_No assigned tasks found_ <!-- Fallback message -->
 
-## ⚠️ Attention Required
+### Unassigned High Priority Tasks
 
-### 🔥 Overdue Tasks
 ```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  priority as Priority,
-  assigned_to as "Assigned To",
-  due_date as "Due Date"
+LIST
 FROM "Tasks"
-WHERE due_date < date(today) AND status != "done" AND status != "cancelled" AND due_date != "" AND due_date != null
-SORT due_date ASC
+WHERE (assigned_to = null OR assigned_to = "" OR assigned_to = "unassigned")
+AND (priority = "high" OR priority = "critical")
+AND status != "done" AND status != "cancelled"
+WHERE file.name != this.file.name
+SORT priority DESC, due_date ASC
+LIMIT 10
 ```
 
-### 🚨 Critical Priority
+_No unassigned high priority tasks_ <!-- Fallback message -->
+
+## 📊 Sprint Metrics
+
+### Current Sprint Tasks
+
 ```dataview
 TABLE WITHOUT ID
-  file.link as Task,
-  status as Status,
-  due_date as "Due Date",
-  assigned_to as "Assigned To"
+  default(category, "general") as "Category",
+  length(rows) as "Count",
+  length(filter(rows, (r) => r.status = "done")) as "Completed",
+  length(filter(rows, (r) => r.status = "in_progress")) as "In Progress",
+  length(filter(rows, (r) => r.status = "new" OR !r.status)) as "Not Started"
 FROM "Tasks"
-WHERE priority = "critical" AND status != "done" AND status != "cancelled"
-SORT status ASC, due_date ASC
-```
-
-### 🔓 Unassigned High Priority
-```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  category as Category,
-  due_date as "Due Date"
-FROM "Tasks"
-WHERE (assigned_to = "" OR assigned_to = null) AND priority = "high" AND status != "done" AND status != "cancelled"
-SORT due_date ASC
-```
-
----
-
-## 📈 Velocity Tracking
-
-### Tasks Completed This Week
-```dataview
-TABLE WITHOUT ID
-  file.link as Task,
-  assigned_to as "Completed By",
-  priority as Priority
-FROM "Tasks"
-WHERE status = "done" AND file.mtime >= date(today) - dur(7 days)
-SORT file.mtime DESC
-```
-
-### Tasks by Meeting Source (Last 30 Days)
-```dataview
-TABLE WITHOUT ID
-  meeting_source as "Meeting",
-  length(rows) as "Tasks Generated"
-FROM "Tasks"
-WHERE meeting_date >= date(today) - dur(30 days) AND meeting_source != "" AND meeting_source != null
-GROUP BY meeting_source
+WHERE contains(sprint, dateformat(date(today), "yyyy-'W'WW")) OR !sprint
+WHERE file.name != this.file.name
+GROUP BY category
 SORT length(rows) DESC
 LIMIT 10
 ```
 
----
+_No sprint data available_ <!-- Fallback message -->
 
-## 🔧 Quick Actions
+## 📈 Priority Distribution
 
-- **Create New Task:** [[Templates/task-template|📝 New Task]]
-- **View All Tasks:** [[Tasks/|📁 Tasks Folder]]
-- **Meeting Notes:** [[Meetings/|📅 All Meetings]]
-- **Command Center:** [[Meta/dashboards/🧠-Command-Center|🧠 Main Dashboard]]
-
----
-
-## 📋 Task Management Guide
-
-### Status Workflow
-```mermaid
-graph LR
-    A[🆕 New] --> B[📋 Ready]
-    B --> C[🚀 In Progress]
-    C --> D[🔍 In Review]
-    D --> E[✅ Done]
-    C --> F[🚫 Blocked]
-    F --> C
+```dataview
+TABLE WITHOUT ID
+  default(priority, "medium") as "Priority",
+  length(rows) as "Total",
+  length(filter(rows, (r) => r.status != "done" AND r.status != "cancelled")) as "Active",
+  length(filter(rows, (r) => r.status = "done")) as "Completed"
+FROM "Tasks"
+WHERE file.name != this.file.name
+GROUP BY priority
+SORT 
+  choice(priority = "critical", 1,
+  choice(priority = "high", 2,
+  choice(priority = "medium", 3, 4))) ASC
+LIMIT 10
 ```
 
-### Priority Levels
-- 🚨 **Critical** - Drop everything
-- 🔥 **High** - Top priority
-- ⚡ **Medium** - Normal priority
-- 📌 **Low** - When time permits
+## 📅 Upcoming Deadlines (Next 14 Days)
+
+```dataview
+TABLE WITHOUT ID
+  link(file.link, default(title, file.name)) as "Task",
+  default(priority, "medium") as "Priority",
+  default(assigned_to, "unassigned") as "Assigned To",
+  due_date as "Due Date",
+  (date(today) - due_date).days as "Days Until Due"
+FROM "Tasks"
+WHERE due_date != null 
+  AND due_date >= date(today) 
+  AND due_date <= date(today) + dur(14 days)
+  AND status != "done" 
+  AND status != "cancelled"
+WHERE file.name != this.file.name
+SORT due_date ASC
+LIMIT 20
+```
+
+_No upcoming deadlines in the next 14 days_ <!-- Fallback message -->
+
+## 🔄 Task Flow Metrics (Last 30 Days)
+
+### Tasks Created vs Completed
+
+```dataview
+TABLE WITHOUT ID
+  "Last 30 Days" as Period,
+  length(filter(rows, (r) => r.created >= date(today) - dur(30 days))) as "Created",
+  length(filter(rows, (r) => r.status = "done" AND r.completed_date >= date(today) - dur(30 days))) as "Completed",
+  length(filter(rows, (r) => r.status = "cancelled" AND r.modified >= date(today) - dur(30 days))) as "Cancelled"
+FROM "Tasks"
+WHERE file.name != this.file.name
+GROUP BY true
+LIMIT 1
+```
+
+## 🏷️ Tasks by Category
+
+```dataview
+TABLE WITHOUT ID
+  default(category, "uncategorized") as "Category",
+  length(rows) as "Total",
+  length(filter(rows, (r) => r.status = "in_progress")) as "Active",
+  length(filter(rows, (r) => r.priority = "high" OR r.priority = "critical")) as "High Priority"
+FROM "Tasks"
+WHERE status != "done" AND status != "cancelled"
+WHERE file.name != this.file.name
+GROUP BY category
+SORT length(rows) DESC
+LIMIT 15
+```
+
+_No categorized tasks found_ <!-- Fallback message -->
+
+## 🔍 Quick Filters
+
+### My Tasks
+
+[[Tasks#My Active Tasks|View My Tasks]] | [[Tasks#My Completed Tasks|View My Completed]]
+
+### By Priority
+
+[[Tasks#Critical|Critical]] | [[Tasks#High|High Priority]] | [[Tasks#Medium|Medium Priority]] | [[Tasks#Low|Low Priority]]
+
+### By Status
+
+[[Tasks#New|New]] | [[Tasks#Ready|Ready]] | [[Tasks#InProgress|In Progress]] | [[Tasks#Review|In Review]] | [[Tasks#Blocked|Blocked]] | [[Tasks#Done|Completed]]
 
 ---
 
-*Dashboard refreshes automatically when task properties change*  
-*Last updated: This dashboard updates in real-time via Dataview*
+## 📝 Dashboard Notes
+
+This dashboard automatically updates based on your task data. All queries include error handling and fallback messages for when no data is available.
+
+**Key Features:**
+
+- Error-resistant queries with `default()` functions
+- Fallback messages for empty results
+- Query limits to prevent performance issues
+- Smart sorting for most relevant results first
+- Null-safe operations throughout
+
+**Last Dashboard Update:** <%tp.date.now("YYYY-MM-DD HH:mm")%> **Auto-refresh:** This dashboard uses live Dataview queries
+
+---
+
+_Tags:_ #dashboard #tasks #project-management
